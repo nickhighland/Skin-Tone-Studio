@@ -314,7 +314,13 @@ private struct CameraInspector: View {
 
 private struct ProfilesInspector: View {
     @ObservedObject var model: AppModel
+    @ObservedObject private var profileStore: ProfileStore
     @State private var name = "My look"
+
+    init(model: AppModel) {
+        self.model = model
+        _profileStore = ObservedObject(wrappedValue: model.profiles)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -324,21 +330,22 @@ private struct ProfilesInspector: View {
                 TextField("Profile name", text: $name)
                 Button {
                     let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-                    model.profiles.save(name: trimmed.isEmpty ? "Untitled look" : trimmed,
-                                        color: model.colorSettings, hardware: model.hardwareSettings)
+                    profileStore.save(name: trimmed.isEmpty ? "Untitled look" : trimmed,
+                                      color: model.colorSettings, hardware: model.hardwareSettings)
+                    name = ""
                 } label: {
                     Label("Save profile", systemImage: "plus.circle.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
             }
 
-            if model.profiles.profiles.isEmpty {
+            if profileStore.profiles.isEmpty {
                 ContentUnavailableView("No Saved Looks", systemImage: "square.stack.3d.up.slash",
                                        description: Text("Your current settings can be saved above."))
                     .frame(maxWidth: .infinity).padding(.top, 26)
             } else {
                 VStack(spacing: 9) {
-                    ForEach(model.profiles.profiles) { profile in
+                    ForEach(profileStore.profiles) { profile in
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(profile.name).font(.subheadline.weight(.semibold))
@@ -347,7 +354,7 @@ private struct ProfilesInspector: View {
                             }
                             Spacer()
                             Button("Load") { model.load(profile) }.buttonStyle(.bordered)
-                            Button(role: .destructive) { model.profiles.delete(profile) } label: {
+                            Button(role: .destructive) { profileStore.delete(profile) } label: {
                                 Image(systemName: "trash")
                             }.buttonStyle(.plain)
                         }

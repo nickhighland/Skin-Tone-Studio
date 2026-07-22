@@ -20,7 +20,13 @@ Not every webcam sees every complexion accurately. Skin Tone Studio is an uplift
 - Stays available in the macOS menu bar when its window is minimized or closed.
 - Restores the webcam's UVC factory defaults with Camera Reset.
 
-## Build and run
+## Install
+
+Download `Skin Tone Studio.dmg` from the [latest GitHub Release](https://github.com/nickhighland/Skin-Tone-Studio/releases/latest), open it, and drag **Skin Tone Studio** into **Applications**. No Terminal commands are required.
+
+The current community build is ad-hoc signed rather than Apple-notarized. On first launch, Control-click the app in Applications and choose **Open**, then confirm **Open** in macOS.
+
+## Build from source
 
 macOS 14 or newer and Apple's Command Line Tools are required. The app is built against the currently selected macOS SDK.
 

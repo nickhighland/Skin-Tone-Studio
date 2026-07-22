@@ -68,6 +68,11 @@ public struct ColorSettings: Codable, Equatable, Sendable {
     }
 
     public static var cameraNeutral: ColorSettings { ColorSettings() }
+
+    /// The connected UVC camera's hue axis runs opposite the UI's green-to-magenta direction.
+    public var normalizedCameraHueOffset: Double {
+        -(tint * 0.14 + rosiness * 0.10 * correctionStrength)
+    }
 }
 
 public struct HardwareSettings: Codable, Equatable, Sendable {

@@ -1,6 +1,7 @@
 import Foundation
 import SkinToneCore
 import AVFoundation
+import Combine
 
 private var failures: [String] = []
 
@@ -15,6 +16,13 @@ check(color.startingPoint == .deep, "Skin-tone preset selection")
 check(color.exposure == 0.35, "Preset must not alter exposure or lighten skin")
 check(color.skinWarmth == SkinToneStartingPoint.deep.defaults.warmth, "Preset warmth")
 check(color.rosiness == SkinToneStartingPoint.deep.defaults.rosiness, "Preset rosiness")
+
+color.tint = 1
+color.rosiness = 0
+check(color.normalizedCameraHueOffset < 0, "Magenta/right tint maps to the camera's magenta direction")
+color.tint = 0
+color.rosiness = 0.25
+check(color.normalizedCameraHueOffset < 0, "Positive rosiness maps to the camera's rosy direction")
 
 var hardware = HardwareSettings()
 hardware.flickerFrequency = 50
@@ -36,6 +44,20 @@ do {
     check(decoded == profile, "Profile JSON round trip")
 } catch {
     failures.append("Profile JSON round trip threw: \(error.localizedDescription)")
+}
+
+MainActor.assumeIsolated {
+    let profileURL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("skin-tone-studio-profile-check-\(UUID().uuidString).json")
+    let store = ProfileStore(fileURL: profileURL)
+    var profilePublications = 0
+    let publication = store.objectWillChange.sink { profilePublications += 1 }
+    store.save(name: "Visible immediately", color: ColorSettings(), hardware: HardwareSettings())
+    check(store.profiles.count == 1, "Saved profile is published immediately")
+    if let profile = store.profiles.first { store.delete(profile) }
+    check(store.profiles.isEmpty, "Deleted profile is published immediately")
+    check(profilePublications >= 2, "Profile list publishes save and delete changes")
+    withExtendedLifetime(publication) {}
 }
 
 if failures.isEmpty {

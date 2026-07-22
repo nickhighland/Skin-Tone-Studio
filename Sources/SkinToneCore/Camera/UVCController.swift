@@ -175,7 +175,7 @@ public final class UVCController: @unchecked Sendable {
         }
         if let range = capabilities.hue {
             let baseline = range.normalizedValue(for: baselineHue ?? range.current)
-            let delta = color.tint * 0.14 + color.rosiness * 0.10 * skinStrength
+            let delta = color.normalizedCameraHueOffset
             if abs(delta) > 0.0005 { hueWasAdjusted = true }
             if hueWasAdjusted { attempt { try write(range.rawValue(for: baseline + delta), to: .hue) } }
         }

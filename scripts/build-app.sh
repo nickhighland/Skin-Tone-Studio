@@ -5,6 +5,7 @@ project_dir=${0:A:h:h}
 configuration=${1:-release}
 app_dir="$project_dir/dist/Skin Tone Studio.app"
 archive_path="$project_dir/dist/Skin Tone Studio.zip"
+dmg_path="$project_dir/dist/Skin Tone Studio.dmg"
 staging_root=$(mktemp -d /tmp/skin-tone-studio-build.XXXXXX)
 staging_app="$staging_root/Skin Tone Studio.app"
 contents_dir="$staging_app/Contents"
@@ -31,5 +32,14 @@ xattr -d 'com.apple.fileprovider.fpfs#P' "$app_dir" 2>/dev/null || true
 codesign --verify --deep --strict "$app_dir"
 rm -f "$archive_path"
 ditto -c -k --norsrc --keepParent "$app_dir" "$archive_path"
+
+dmg_root="$staging_root/dmg"
+mkdir -p "$dmg_root"
+ditto --norsrc "$app_dir" "$dmg_root/Skin Tone Studio.app"
+ln -s /Applications "$dmg_root/Applications"
+codesign --verify --deep --strict "$dmg_root/Skin Tone Studio.app"
+rm -f "$dmg_path"
+hdiutil create -quiet -volname "Skin Tone Studio" -srcfolder "$dmg_root" -ov -format UDZO "$dmg_path"
 echo "Built: $app_dir"
 echo "Archive: $archive_path"
+echo "Disk image: $dmg_path"
