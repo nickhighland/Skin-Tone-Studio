@@ -4,6 +4,7 @@ set -euo pipefail
 project_dir=${0:A:h:h}
 configuration=${1:-release}
 app_dir="$project_dir/dist/Skin Tone Studio.app"
+archive_path="$project_dir/dist/Skin Tone Studio.zip"
 staging_root=$(mktemp -d /tmp/skin-tone-studio-build.XXXXXX)
 staging_app="$staging_root/Skin Tone Studio.app"
 contents_dir="$staging_app/Contents"
@@ -28,4 +29,7 @@ mv "$staging_app" "$app_dir"
 xattr -d com.apple.FinderInfo "$app_dir" 2>/dev/null || true
 xattr -d 'com.apple.fileprovider.fpfs#P' "$app_dir" 2>/dev/null || true
 codesign --verify --deep --strict "$app_dir"
+rm -f "$archive_path"
+ditto -c -k --norsrc --keepParent "$app_dir" "$archive_path"
 echo "Built: $app_dir"
+echo "Archive: $archive_path"
