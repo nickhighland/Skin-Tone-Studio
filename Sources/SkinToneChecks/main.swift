@@ -58,6 +58,17 @@ MainActor.assumeIsolated {
     check(store.profiles.isEmpty, "Deleted profile is published immediately")
     check(profilePublications >= 2, "Profile list publishes save and delete changes")
     withExtendedLifetime(publication) {}
+
+    var savedColor = ColorSettings()
+    savedColor.contrast = 1.35
+    savedColor.saturation = 1.25
+    var savedHardware = HardwareSettings()
+    savedHardware.focus = 0.82
+    let savedProfile = StudioProfile(name: "Slider restore", color: savedColor, hardware: savedHardware)
+    let model = AppModel()
+    model.load(savedProfile)
+    check(model.colorSettings == savedColor, "Loading a profile restores every color slider value")
+    check(model.hardwareSettings == savedHardware, "Loading a profile restores every hardware slider value")
 }
 
 if failures.isEmpty {

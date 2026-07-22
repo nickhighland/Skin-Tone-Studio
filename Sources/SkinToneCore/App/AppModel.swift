@@ -24,7 +24,11 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var cameras: [CameraChoice] = []
     @Published public var selectedCameraID = ""
     @Published public var colorSettings = ColorSettings() {
-        didSet { scheduleRealtimeColorApply() }
+        didSet {
+            guard !isRestoringProfile else { return }
+            pendingProfile = nil
+            scheduleRealtimeColorApply()
+        }
     }
     @Published public var hardwareSettings = HardwareSettings()
     @Published public private(set) var capabilities = CameraCapabilities()
@@ -41,6 +45,8 @@ public final class AppModel: ObservableObject {
     private var notificationTokens: [NSObjectProtocol] = []
     private var colorApplyWork: DispatchWorkItem?
     private var focusApplyWork: DispatchWorkItem?
+    private var isRestoringProfile = false
+    private var pendingProfile: StudioProfile?
 
     public init() {
         let center = NotificationCenter.default
@@ -97,24 +103,32 @@ public final class AppModel: ObservableObject {
 
         let expectedID = id
         hardwareQueue.async { [weak self] in
-            let result = Result { try UVCController(device: device) }
+            let result = Result {
+                let controller = try UVCController(device: device)
+                try controller.resetColorToDefaults()
+                return controller
+            }
             Task { @MainActor in
                 guard let self, self.selectedCameraID == expectedID else { return }
                 switch result {
                 case .success(let controller):
                     self.uvcController = controller
                     self.capabilities = controller.capabilities
-                    if let focus = controller.capabilities.focus {
-                        self.hardwareSettings.focus = focus.normalizedValue(for: focus.current)
-                    }
-                    if let autoFocus = controller.capabilities.autoFocusEnabled {
-                        self.hardwareSettings.autoFocus = autoFocus
-                    }
-                    if let powerLineMode = controller.capabilities.powerLineMode {
-                        self.hardwareSettings.powerLineMode = powerLineMode
-                    }
                     self.controlStatus = .ready
-                    self.scheduleRealtimeColorApply()
+                    if let profile = self.pendingProfile {
+                        self.restore(profile, using: controller)
+                    } else {
+                        if let focus = controller.capabilities.focus {
+                            self.hardwareSettings.focus = focus.normalizedValue(for: focus.current)
+                        }
+                        if let autoFocus = controller.capabilities.autoFocusEnabled {
+                            self.hardwareSettings.autoFocus = autoFocus
+                        }
+                        if let powerLineMode = controller.capabilities.powerLineMode {
+                            self.hardwareSettings.powerLineMode = powerLineMode
+                        }
+                        self.scheduleRealtimeColorApply()
+                    }
                 case .failure(let error):
                     self.controlStatus = .previewOnly(error.localizedDescription)
                 }
@@ -171,6 +185,7 @@ public final class AppModel: ObservableObject {
         }
         colorApplyWork?.cancel()
         focusApplyWork?.cancel()
+        pendingProfile = nil
         hardwareQueue.async { [weak self] in
             do {
                 try controller.resetToDefaults()
@@ -188,10 +203,35 @@ public final class AppModel: ObservableObject {
     }
 
     public func load(_ profile: StudioProfile) {
+        colorApplyWork?.cancel()
+        focusApplyWork?.cancel()
+        pendingProfile = profile
+        isRestoringProfile = true
         colorSettings = profile.color
         hardwareSettings = profile.hardware
-        applyAutoFocus()
-        if hardwareSettings.precisionAntiFlicker { applyAntiFlicker() } else { applyPowerLineMode() }
+        isRestoringProfile = false
+        guard let controller = uvcController else { return }
+        restore(profile, using: controller)
+    }
+
+    private func restore(_ profile: StudioProfile, using controller: UVCController) {
+        let color = profile.color
+        let hardware = profile.hardware
+        hardwareQueue.async { [weak self] in
+            do {
+                try controller.resetColorToDefaults()
+                try controller.applyHardwareLook(color)
+                try controller.setAutoFocus(hardware.autoFocus)
+                if !hardware.autoFocus { try controller.setFocus(normalized: hardware.focus) }
+                if hardware.precisionAntiFlicker {
+                    try controller.applyPrecisionAntiFlicker(frequency: hardware.flickerFrequency)
+                } else {
+                    try controller.setPowerLineMode(hardware.powerLineMode)
+                }
+            } catch {
+                Task { @MainActor in self?.message = error.localizedDescription }
+            }
+        }
     }
 
     private func scheduleRealtimeColorApply() {
