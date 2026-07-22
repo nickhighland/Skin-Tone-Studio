@@ -120,11 +120,7 @@ public final class UVCController: @unchecked Sendable {
                 || currentPowerLine == PowerLineMode.automatic.rawValue
         }
         capabilities = detected
-        baselineWhiteBalance = detected.whiteBalance?.current
-        baselineHue = detected.hue?.current
-        baselineSaturation = detected.saturation?.current
-        baselineBrightness = detected.brightness?.current
-        baselineContrast = detected.contrast?.current
+        setColorBaselinesToDefaults()
     }
 
     deinit {
@@ -200,6 +196,34 @@ public final class UVCController: @unchecked Sendable {
         if successfulWrites == 0, let firstError { throw firstError }
     }
 
+    /// Restores only the controls represented by the color sliders, leaving focus and flicker settings intact.
+    public func resetColorToDefaults() throws {
+        var firstError: Error?
+        var successfulWrites = 0
+        func attempt(_ action: () throws -> Void) {
+            do { try action(); successfulWrites += 1 }
+            catch { if firstError == nil { firstError = error } }
+        }
+        func reset(_ definition: UVCControlDefinition) {
+            guard isSupported(definition), let value = try? read(.getDefault, from: definition) else { return }
+            attempt { try write(value, to: definition) }
+        }
+
+        let previousAutoWhiteBalance = try? read(.getCurrent, from: .autoWhiteBalance)
+        if capabilities.autoWhiteBalance { attempt { try write(0, to: .autoWhiteBalance) } }
+        [UVCControlDefinition.whiteBalance, .hue, .saturation, .brightness, .contrast].forEach(reset)
+
+        if capabilities.autoWhiteBalance {
+            let automaticDefault = try? read(.getDefault, from: .autoWhiteBalance)
+            if let value = automaticDefault ?? previousAutoWhiteBalance {
+                attempt { try write(value, to: .autoWhiteBalance) }
+            }
+        }
+
+        setColorBaselinesToDefaults()
+        if successfulWrites == 0, let firstError { throw firstError }
+    }
+
     public func resetToDefaults() throws {
         var firstError: Error?
         var successfulWrites = 0
@@ -237,6 +261,12 @@ public final class UVCController: @unchecked Sendable {
         restoreAutomatic(.autoFocus, fallback: previousAutoFocus)
         restoreAutomatic(.exposureMode, fallback: previousExposureMode)
 
+        setColorBaselinesToDefaults()
+
+        if successfulWrites == 0, let firstError { throw firstError }
+    }
+
+    private func setColorBaselinesToDefaults() {
         baselineWhiteBalance = capabilities.whiteBalance?.defaultValue
         baselineHue = capabilities.hue?.defaultValue
         baselineSaturation = capabilities.saturation?.defaultValue
@@ -247,8 +277,6 @@ public final class UVCController: @unchecked Sendable {
         saturationWasAdjusted = false
         brightnessWasAdjusted = false
         contrastWasAdjusted = false
-
-        if successfulWrites == 0, let firstError { throw firstError }
     }
 
     public func currentHardwareSettings() -> HardwareSettings {
