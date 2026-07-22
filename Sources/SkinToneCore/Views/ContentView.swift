@@ -5,6 +5,7 @@ private enum InspectorTab: String, CaseIterable, Identifiable {
     case tone = "Skin Tone"
     case camera = "Camera"
     case profiles = "Profiles"
+    case preferences = "App"
     var id: String { rawValue }
 }
 
@@ -178,6 +179,7 @@ public struct ContentView: View {
                     case .tone: ToneInspector(model: model)
                     case .camera: CameraInspector(model: model)
                     case .profiles: ProfilesInspector(model: model)
+                    case .preferences: PreferencesInspector()
                     }
                 }
                 .padding(.horizontal, 18).padding(.bottom, 22)
@@ -185,6 +187,50 @@ public struct ContentView: View {
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
+    }
+}
+
+private struct PreferencesInspector: View {
+    @ObservedObject private var startupSettings = StartupSettings.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            InspectorHeader(
+                title: "Application",
+                subtitle: "Choose how Skin Tone Studio behaves when you sign in to your Mac."
+            )
+
+            ControlCard(title: "Startup") {
+                Toggle("Start with computer", isOn: Binding(
+                    get: { startupSettings.startsWithComputer },
+                    set: { startupSettings.setStartsWithComputer($0) }
+                ))
+
+                Text("Skin Tone Studio opens at login and remains available from the menu bar.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if startupSettings.requiresApproval {
+                    Label("Approval is required in macOS Login Items.", systemImage: "exclamationmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                    Button("Open Login Items") {
+                        startupSettings.openLoginItemsSettings()
+                    }
+                    .buttonStyle(.bordered)
+                } else if let message = startupSettings.message {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if startupSettings.startsWithComputer {
+                    Label("Enabled", systemImage: "checkmark.circle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.green)
+                }
+            }
+        }
+        .onAppear { startupSettings.refresh() }
     }
 }
 

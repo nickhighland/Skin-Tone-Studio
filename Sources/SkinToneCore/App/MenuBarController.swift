@@ -7,6 +7,7 @@ public extension Notification.Name {
 
 public final class MenuBarController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
+    private var startupMenuItem: NSMenuItem?
     private var notificationTokens: [NSObjectProtocol] = []
 
     public override init() {
@@ -39,6 +40,12 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
             guard let window = note.object as? NSWindow, window.canBecomeMain else { return }
             window.isReleasedWhenClosed = false
             DispatchQueue.main.async { self?.enterMenuBarMode() }
+        })
+        notificationTokens.append(center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            StartupSettings.shared.refresh()
+            self?.syncStartupMenuItem()
         })
 
         DispatchQueue.main.async { [weak self] in
@@ -85,6 +92,12 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         hide.target = self
         menu.addItem(hide)
 
+        let startup = NSMenuItem(title: "Start with computer", action: #selector(toggleStartupFromMenu), keyEquivalent: "")
+        startup.target = self
+        menu.addItem(startup)
+        startupMenuItem = startup
+        syncStartupMenuItem()
+
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Skin Tone Studio", action: #selector(quitFromMenu), keyEquivalent: "q")
         quit.target = self
@@ -103,6 +116,25 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
 
     @objc private func resetCameraFromMenu() {
         NotificationCenter.default.post(name: .skinToneStudioCameraReset, object: nil)
+    }
+
+    @objc private func toggleStartupFromMenu() {
+        let settings = StartupSettings.shared
+        settings.setStartsWithComputer(!settings.startsWithComputer)
+        syncStartupMenuItem()
+
+        if let message = settings.message {
+            let alert = NSAlert()
+            alert.messageText = "Start with computer"
+            alert.informativeText = message
+            alert.addButton(withTitle: "OK")
+            if settings.requiresApproval {
+                alert.addButton(withTitle: "Open Login Items")
+            }
+            if alert.runModal() == .alertSecondButtonReturn {
+                settings.openLoginItemsSettings()
+            }
+        }
     }
 
     @objc private func quitFromMenu() {
@@ -125,5 +157,9 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
 
     private func setWindowVisibleState() {
         if mainWindow?.isVisible == true { NSApp.setActivationPolicy(.regular) }
+    }
+
+    private func syncStartupMenuItem() {
+        startupMenuItem?.state = StartupSettings.shared.startsWithComputer ? .on : .off
     }
 }
