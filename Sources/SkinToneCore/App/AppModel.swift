@@ -27,10 +27,17 @@ public final class AppModel: ObservableObject {
         didSet {
             guard !isRestoringProfile else { return }
             pendingProfile = nil
+            persistCurrentSession()
             scheduleRealtimeColorApply()
         }
     }
-    @Published public var hardwareSettings = HardwareSettings()
+    @Published public var hardwareSettings = HardwareSettings() {
+        didSet {
+            guard !isRestoringProfile else { return }
+            pendingProfile = nil
+            persistCurrentSession()
+        }
+    }
     @Published public private(set) var capabilities = CameraCapabilities()
     @Published public private(set) var controlStatus: CameraControlStatus = .checking
     @Published public private(set) var permissionDenied = false
@@ -47,8 +54,14 @@ public final class AppModel: ObservableObject {
     private var focusApplyWork: DispatchWorkItem?
     private var isRestoringProfile = false
     private var pendingProfile: StudioProfile?
+    private let sessionStore: CameraSessionStore
 
-    public init() {
+    public convenience init() {
+        self.init(sessionStore: CameraSessionStore())
+    }
+
+    public init(sessionStore: CameraSessionStore) {
+        self.sessionStore = sessionStore
         let center = NotificationCenter.default
         for name in [AVCaptureDevice.wasConnectedNotification, AVCaptureDevice.wasDisconnectedNotification] {
             notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
@@ -85,7 +98,11 @@ public final class AppModel: ObservableObject {
             CameraChoice(id: $0.uniqueID, name: $0.localizedName, isExternal: $0.deviceType == .external)
         }
         if selectedCameraID.isEmpty || devicesByID[selectedCameraID] == nil {
-            selectedCameraID = cameras.first?.id ?? ""
+            if let rememberedID = sessionStore.selectedCameraID, devicesByID[rememberedID] != nil {
+                selectedCameraID = rememberedID
+            } else {
+                selectedCameraID = cameras.first?.id ?? ""
+            }
         }
         if !selectedCameraID.isEmpty { selectCamera(id: selectedCameraID) }
     }
@@ -93,9 +110,22 @@ public final class AppModel: ObservableObject {
     public func selectCamera(id: String) {
         guard let device = devicesByID[id] else { return }
         selectedCameraID = id
+        sessionStore.rememberSelectedCamera(id: id)
         capabilities = CameraCapabilities()
         controlStatus = .checking
         uvcController = nil
+
+        isRestoringProfile = true
+        if let saved = sessionStore.settings(for: id) {
+            colorSettings = saved.color
+            hardwareSettings = saved.hardware
+            pendingProfile = StudioProfile(name: "Last session", color: saved.color, hardware: saved.hardware)
+        } else {
+            colorSettings = .cameraNeutral
+            hardwareSettings = HardwareSettings()
+            pendingProfile = nil
+        }
+        isRestoringProfile = false
 
         captureEngine.start(device: device) { [weak self] result in
             if case .failure(let error) = result { self?.message = error.localizedDescription }
@@ -210,11 +240,13 @@ public final class AppModel: ObservableObject {
         colorSettings = profile.color
         hardwareSettings = profile.hardware
         isRestoringProfile = false
+        persistCurrentSession()
         guard let controller = uvcController else { return }
         restore(profile, using: controller)
     }
 
     private func restore(_ profile: StudioProfile, using controller: UVCController) {
+        pendingProfile = nil
         let color = profile.color
         let hardware = profile.hardware
         hardwareQueue.async { [weak self] in
@@ -247,6 +279,10 @@ public final class AppModel: ObservableObject {
         box.value = work
         colorApplyWork = work
         hardwareQueue.asyncAfter(deadline: .now() + 0.045, execute: work)
+    }
+
+    private func persistCurrentSession() {
+        sessionStore.save(color: colorSettings, hardware: hardwareSettings, for: selectedCameraID)
     }
 
     private func performHardwareAction(success: String? = nil,
