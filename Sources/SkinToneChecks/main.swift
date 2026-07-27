@@ -47,6 +47,26 @@ do {
 }
 
 MainActor.assumeIsolated {
+    let defaultsName = "SkinToneStudioChecks.\(UUID().uuidString)"
+    let sessionDefaults = UserDefaults(suiteName: defaultsName)!
+    let sessionKey = "CameraSessions"
+    let sessionStore = CameraSessionStore(defaults: sessionDefaults, storageKey: sessionKey)
+    var rememberedColor = ColorSettings()
+    rememberedColor.contrast = 1.31
+    rememberedColor.temperature = -0.24
+    var rememberedHardware = HardwareSettings()
+    rememberedHardware.focus = 0.73
+    sessionStore.rememberSelectedCamera(id: "camera-a")
+    sessionStore.save(color: rememberedColor, hardware: rememberedHardware, for: "camera-a")
+
+    let reloadedSessionStore = CameraSessionStore(defaults: sessionDefaults, storageKey: sessionKey)
+    check(reloadedSessionStore.selectedCameraID == "camera-a", "Last selected camera survives relaunch")
+    check(reloadedSessionStore.settings(for: "camera-a")?.color == rememberedColor,
+          "Last color settings survive relaunch")
+    check(reloadedSessionStore.settings(for: "camera-a")?.hardware == rememberedHardware,
+          "Last hardware settings survive relaunch")
+    sessionDefaults.removePersistentDomain(forName: defaultsName)
+
     let profileURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("skin-tone-studio-profile-check-\(UUID().uuidString).json")
     let store = ProfileStore(fileURL: profileURL)
