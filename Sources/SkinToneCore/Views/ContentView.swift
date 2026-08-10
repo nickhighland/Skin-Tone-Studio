@@ -276,11 +276,12 @@ private struct ToneInspector: View {
 
             ControlCard(title: "Skin tone correction") {
                 StudioSlider(title: "Strength", value: $model.colorSettings.correctionStrength,
-                             range: 0...1, display: .percent)
+                             range: 0...1, display: .percent,
+                             axisLabels: (leading: "Low", trailing: "High"))
                 StudioSlider(title: "Warmth", value: $model.colorSettings.skinWarmth,
                              range: -0.5...0.5, display: .signed)
                 StudioSlider(title: "Rosiness", value: $model.colorSettings.rosiness,
-                             range: -0.5...0.5, display: .signed)
+                             range: -1...1, display: .signed)
             }
 
             ControlCard(title: "Color cast") {
@@ -468,6 +469,7 @@ private struct StudioSlider: View {
     let range: ClosedRange<Double>
     let display: SliderDisplay
     var disabled = false
+    var axisLabels: (leading: String, trailing: String)?
     var onCommit: () -> Void = {}
 
     var formatted: String {
@@ -487,6 +489,18 @@ private struct StudioSlider: View {
                 Text(formatted).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             Slider(value: $value, in: range, onEditingChanged: { if !$0 { onCommit() } })
+                // Strength and other numeric axes must always increase from left to right.
+                .environment(\.layoutDirection, .leftToRight)
+            if let axisLabels {
+                HStack {
+                    Text(axisLabels.leading)
+                    Spacer()
+                    Text(axisLabels.trailing)
+                }
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .accessibilityHidden(true)
+            }
         }
         .disabled(disabled).opacity(disabled ? 0.5 : 1)
     }

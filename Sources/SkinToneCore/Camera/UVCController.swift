@@ -398,7 +398,17 @@ public final class UVCController: @unchecked Sendable {
         let coolValue = capabilities.whiteBalance == nil ? nil : try? read(.getCurrent, from: .whiteBalance)
         let greenValue = capabilities.hue == nil ? nil : try? read(.getCurrent, from: .hue)
 
-        return (warmValue != coolValue ? 1 : 0) + (rosyValue != greenValue ? 1 : 0)
+        let warmthIsDistinct = warmValue != coolValue
+        let rosinessIsVisible: Bool
+        if let range = capabilities.hue, let rosyValue, let greenValue {
+            let visibleSpan = max(range.step * 4,
+                                  Int((Double(range.maximum - range.minimum) * 0.20).rounded()))
+            rosinessIsVisible = abs(rosyValue - greenValue) >= visibleSpan
+        } else {
+            rosinessIsVisible = false
+        }
+
+        return (warmthIsDistinct ? 1 : 0) + (rosinessIsVisible ? 1 : 0)
     }
 
     private func isSupported(_ definition: UVCControlDefinition) -> Bool {
