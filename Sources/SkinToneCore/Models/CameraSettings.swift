@@ -76,7 +76,9 @@ public struct ColorSettings: Codable, Equatable, Sendable {
 
     /// The connected UVC camera's hue axis runs opposite the UI's green-to-magenta direction.
     public var normalizedCameraHueOffset: Double {
-        -(tint * 0.22 + rosiness * 0.48 * correctionStrength)
+        // Rosiness needs more range than the broad color-cast control to produce a visible
+        // skin-tone change on webcams whose UVC hue control is relatively coarse.
+        -(tint * 0.22 + rosiness * 0.90 * correctionStrength)
     }
 }
 

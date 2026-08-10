@@ -30,9 +30,12 @@ color.temperature = 0
 check(color.normalizedCameraWhiteBalanceOffset >= 0.3,
       "Skin warmth uses a clearly visible portion of the white-balance range")
 color.skinWarmth = 0
-color.rosiness = 0.5
-check(abs(color.normalizedCameraHueOffset) >= 0.2,
+color.rosiness = 1
+check(abs(color.normalizedCameraHueOffset) >= 0.85,
       "Rosiness uses a clearly visible portion of the hue range")
+color.correctionStrength = 0.1
+check(abs(color.normalizedCameraHueOffset) >= 0.08,
+      "Rosiness remains perceptible at a low correction strength")
 color.correctionStrength = 0
 check(color.normalizedCameraWhiteBalanceOffset == 0,
       "Zero correction strength removes the skin-warmth contribution")
