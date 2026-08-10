@@ -24,6 +24,21 @@ color.tint = 0
 color.rosiness = 0.25
 check(color.normalizedCameraHueOffset < 0, "Positive rosiness maps to the camera's rosy direction")
 
+color.correctionStrength = 1
+color.skinWarmth = 0.5
+color.temperature = 0
+check(color.normalizedCameraWhiteBalanceOffset >= 0.3,
+      "Skin warmth uses a clearly visible portion of the white-balance range")
+color.skinWarmth = 0
+color.rosiness = 0.5
+check(abs(color.normalizedCameraHueOffset) >= 0.2,
+      "Rosiness uses a clearly visible portion of the hue range")
+color.correctionStrength = 0
+check(color.normalizedCameraWhiteBalanceOffset == 0,
+      "Zero correction strength removes the skin-warmth contribution")
+check(color.normalizedCameraHueOffset == 0,
+      "Zero correction strength removes the rosiness contribution")
+
 var hardware = HardwareSettings()
 hardware.flickerFrequency = 50
 check(hardware.antiFlickerExposureUnits == 100, "50 Hz anti-flicker exposure")
@@ -115,6 +130,14 @@ if CommandLine.arguments.contains("--hardware") {
             if CommandLine.arguments.contains("--hardware-write") {
                 let writes = try controller.verifyRealtimeWritePath()
                 print("  state-neutral live writes verified: \(writes)")
+                let focusLocked = try controller.verifyManualFocusPath()
+                print("  manual-focus transition verified: \(focusLocked)")
+                let skinToneControls = try controller.verifySkinToneCorrectionPath()
+                print("  visibly distinct skin-tone controls verified: \(skinToneControls)")
+                check(!c.autoFocus || c.focus == nil || focusLocked,
+                      "Manual focus mode did not remain locked after the autofocus transition")
+                check(c.whiteBalance == nil && c.hue == nil || skinToneControls > 0,
+                      "Skin-tone correction did not produce distinct UVC control values")
             }
         } catch {
             failures.append("UVC diagnostic for \(camera.localizedName): \(error.localizedDescription)")

@@ -18,6 +18,7 @@ Not every webcam sees every complexion accurately. Skin Tone Studio is an uplift
 - Applies white balance, hue, saturation, brightness, and contrast directly to camera hardware as sliders move.
 - Saves named profiles containing color, focus, and anti-flicker settings.
 - Stays available in the macOS menu bar when its window is minimized or closed.
+- Checks GitHub Releases once per day and installs signed updates only after user approval.
 - Restores the webcam's UVC factory defaults with Camera Reset.
 
 ## Install
@@ -54,6 +55,13 @@ Verify live UVC writes by writing supported controls' current values back unchan
 swift run SkinToneChecks --hardware --hardware-write
 ```
 
+Create the versioned ZIP/DMG and signed Sparkle appcast used by a GitHub Release:
+
+```sh
+./scripts/build-app.sh
+./scripts/generate-appcast.sh
+```
+
 ## Important behavior
 
 Hardware UVC changes are made continuously and remain active when Zoom, Teams, FaceTime, or another app opens the physical webcam. There is no separate preview look and no Apply or Send step.
@@ -62,7 +70,7 @@ Built-in Mac cameras, Continuity Camera, and some vendor-specific cameras may no
 
 ## Privacy
 
-Frames are processed locally with Core Image. The app has no networking or analytics code and does not record video.
+Frames are processed locally with Core Image and are never uploaded or recorded. The only network request is the daily or user-requested update check against this repository's GitHub Releases. The app contains no analytics or telemetry.
 
 ## License
 

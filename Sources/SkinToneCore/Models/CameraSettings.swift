@@ -69,9 +69,14 @@ public struct ColorSettings: Codable, Equatable, Sendable {
 
     public static var cameraNeutral: ColorSettings { ColorSettings() }
 
+    /// Converts the user-facing warmth controls into a meaningful portion of the camera's range.
+    public var normalizedCameraWhiteBalanceOffset: Double {
+        temperature * 0.28 + skinWarmth * 0.65 * correctionStrength
+    }
+
     /// The connected UVC camera's hue axis runs opposite the UI's green-to-magenta direction.
     public var normalizedCameraHueOffset: Double {
-        -(tint * 0.14 + rosiness * 0.10 * correctionStrength)
+        -(tint * 0.22 + rosiness * 0.48 * correctionStrength)
     }
 }
 

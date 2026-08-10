@@ -167,10 +167,12 @@ public struct ContentView: View {
 
     private var inspector: some View {
         VStack(spacing: 0) {
-            Picker("Panel", selection: $tab) {
+            Picker("", selection: $tab) {
                 ForEach(InspectorTab.allCases) { Text($0.rawValue).tag($0) }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel("Settings panel")
             .padding(18)
 
             ScrollView {
@@ -228,6 +230,22 @@ private struct PreferencesInspector: View {
                         .font(.caption)
                         .foregroundStyle(.green)
                 }
+            }
+
+            ControlCard(title: "Updates") {
+                Label("Checks GitHub Releases once each day", systemImage: "clock.arrow.circlepath")
+                    .font(.caption)
+                Text("An update is downloaded and installed only after you approve it.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    UpdateController.shared.checkForUpdates()
+                } label: {
+                    Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
             }
         }
         .onAppear { startupSettings.refresh() }

@@ -15,12 +15,18 @@ cd "$project_dir"
 swift build -c "$configuration" --product SkinToneStudio
 binary_dir=$(swift build -c "$configuration" --show-bin-path)
 
-mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources"
+mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources" "$contents_dir/Frameworks"
 cp "$binary_dir/SkinToneStudio" "$contents_dir/MacOS/SkinToneStudio"
+ditto --norsrc "$binary_dir/Sparkle.framework" "$contents_dir/Frameworks/Sparkle.framework"
 cp "$project_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 cp "$project_dir/Resources/AppIcon.icns" "$contents_dir/Resources/AppIcon.icns"
+ditto --norsrc "$project_dir/.build/checkouts/Sparkle/LICENSE" \
+    "$contents_dir/Resources/Sparkle-LICENSE.txt"
 printf 'APPL????' > "$contents_dir/PkgInfo"
 
+install_name_tool -add_rpath '@executable_path/../Frameworks' "$contents_dir/MacOS/SkinToneStudio"
+
+chmod -R u+w "$staging_app"
 xattr -cr "$staging_app"
 codesign --force --deep --sign - "$staging_app"
 if [[ -d "$app_dir" ]]; then

@@ -174,10 +174,7 @@ public final class AppModel: ObservableObject {
         let enabled = hardwareSettings.autoFocus
         let focus = hardwareSettings.focus
         performHardwareAction { controller in
-            try controller.setAutoFocus(enabled)
-            if !enabled {
-                try controller.setFocus(normalized: focus)
-            }
+            try controller.applyFocusMode(autoFocus: enabled, normalizedFocus: focus)
         }
     }
 
@@ -253,8 +250,8 @@ public final class AppModel: ObservableObject {
             do {
                 try controller.resetColorToDefaults()
                 try controller.applyHardwareLook(color)
-                try controller.setAutoFocus(hardware.autoFocus)
-                if !hardware.autoFocus { try controller.setFocus(normalized: hardware.focus) }
+                try controller.applyFocusMode(autoFocus: hardware.autoFocus,
+                                              normalizedFocus: hardware.focus)
                 if hardware.precisionAntiFlicker {
                     try controller.applyPrecisionAntiFlicker(frequency: hardware.flickerFrequency)
                 } else {

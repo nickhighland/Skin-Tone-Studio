@@ -136,6 +136,43 @@ public final class UVCController: @unchecked Sendable {
         try write(range.rawValue(for: normalized), to: .focus)
     }
 
+    /// Switches the camera into a stable focus mode before applying a manual focus position.
+    /// Some UVC webcams ignore focus writes until autofocus has completed an explicit on-to-off transition.
+    public func applyFocusMode(autoFocus: Bool, normalizedFocus: Double) throws {
+        guard capabilities.autoFocus else {
+            if !autoFocus { try setFocus(normalized: normalizedFocus) }
+            return
+        }
+
+        if autoFocus {
+            try setAutoFocus(true)
+            return
+        }
+
+        // Force the same mode transition that previously required checking and unchecking the UI toggle.
+        try setAutoFocus(true)
+        Thread.sleep(forTimeInterval: 0.075)
+
+        for attempt in 0..<3 {
+            try setAutoFocus(false)
+            Thread.sleep(forTimeInterval: 0.085)
+            if (try? read(.getCurrent, from: .autoFocus)) == 0 { break }
+            if attempt == 2 { throw UVCCameraError.requestFailed(kIOReturnNotReady) }
+        }
+
+        try setFocus(normalized: normalizedFocus)
+        Thread.sleep(forTimeInterval: 0.050)
+
+        // Reassert the requested position if the first write landed while the lens was still settling.
+        if let range = capabilities.focus,
+           let actual = try? read(.getCurrent, from: .focus),
+           abs(actual - range.rawValue(for: normalizedFocus)) > max(1, range.step) {
+            try setAutoFocus(false)
+            Thread.sleep(forTimeInterval: 0.050)
+            try setFocus(normalized: normalizedFocus)
+        }
+    }
+
     public func setPowerLineMode(_ mode: PowerLineMode) throws {
         try write(mode.rawValue, to: .powerLine)
     }
@@ -161,8 +198,7 @@ public final class UVCController: @unchecked Sendable {
             do { try action(); successfulWrites += 1 } catch { if firstError == nil { firstError = error } }
         }
 
-        let skinStrength = color.correctionStrength
-        let whiteBalanceDelta = color.temperature * 0.22 + color.skinWarmth * 0.19 * skinStrength
+        let whiteBalanceDelta = color.normalizedCameraWhiteBalanceOffset
         if abs(whiteBalanceDelta) > 0.0005 { whiteBalanceWasAdjusted = true }
         if whiteBalanceWasAdjusted, let range = capabilities.whiteBalance {
             if capabilities.autoWhiteBalance { attempt { try write(0, to: .autoWhiteBalance) } }
@@ -308,6 +344,61 @@ public final class UVCController: @unchecked Sendable {
         }
         if writes == 0, let firstError { throw firstError }
         return writes
+    }
+
+    /// Exercises the manual-focus transition and restores the camera's original focus state.
+    @discardableResult public func verifyManualFocusPath() throws -> Bool {
+        guard capabilities.autoFocus, let range = capabilities.focus else { return false }
+        let originalAutoFocus = try read(.getCurrent, from: .autoFocus)
+        let originalFocus = try read(.getCurrent, from: .focus)
+        defer {
+            if originalAutoFocus != 0 {
+                try? setAutoFocus(true)
+            } else {
+                try? applyFocusMode(autoFocus: false,
+                                    normalizedFocus: range.normalizedValue(for: originalFocus))
+            }
+        }
+
+        try applyFocusMode(autoFocus: false,
+                           normalizedFocus: range.normalizedValue(for: originalFocus))
+        let autofocusDisabled = try read(.getCurrent, from: .autoFocus) == 0
+        let appliedFocus = try read(.getCurrent, from: .focus)
+        return autofocusDisabled && abs(appliedFocus - originalFocus) <= max(1, range.step)
+    }
+
+    /// Verifies that the strengthened warmth and rosiness mappings produce distinct hardware values.
+    @discardableResult public func verifySkinToneCorrectionPath() throws -> Int {
+        let originalAutoWhiteBalance = capabilities.autoWhiteBalance
+            ? try? read(.getCurrent, from: .autoWhiteBalance) : nil
+        let originalWhiteBalance = capabilities.whiteBalance == nil
+            ? nil : try? read(.getCurrent, from: .whiteBalance)
+        let originalHue = capabilities.hue == nil ? nil : try? read(.getCurrent, from: .hue)
+        defer {
+            if capabilities.autoWhiteBalance { try? write(0, to: .autoWhiteBalance) }
+            if let originalWhiteBalance { try? write(originalWhiteBalance, to: .whiteBalance) }
+            if let originalHue { try? write(originalHue, to: .hue) }
+            if let originalAutoWhiteBalance { try? write(originalAutoWhiteBalance, to: .autoWhiteBalance) }
+            setColorBaselinesToDefaults()
+        }
+
+        var positive = ColorSettings()
+        positive.correctionStrength = 1
+        positive.skinWarmth = 0.35
+        positive.rosiness = 0.35
+        try applyHardwareLook(positive)
+        let warmValue = capabilities.whiteBalance == nil ? nil : try? read(.getCurrent, from: .whiteBalance)
+        let rosyValue = capabilities.hue == nil ? nil : try? read(.getCurrent, from: .hue)
+
+        var negative = ColorSettings()
+        negative.correctionStrength = 1
+        negative.skinWarmth = -0.35
+        negative.rosiness = -0.35
+        try applyHardwareLook(negative)
+        let coolValue = capabilities.whiteBalance == nil ? nil : try? read(.getCurrent, from: .whiteBalance)
+        let greenValue = capabilities.hue == nil ? nil : try? read(.getCurrent, from: .hue)
+
+        return (warmValue != coolValue ? 1 : 0) + (rosyValue != greenValue ? 1 : 0)
     }
 
     private func isSupported(_ definition: UVCControlDefinition) -> Bool {
