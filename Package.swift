@@ -8,9 +8,15 @@ let package = Package(
         .library(name: "SkinToneCore", targets: ["SkinToneCore"]),
         .executable(name: "SkinToneStudio", targets: ["SkinToneStudio"])
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5")
+    ],
     targets: [
         .target(
             name: "SkinToneCore",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             linkerSettings: [
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("AppKit"),

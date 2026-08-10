@@ -1,0 +1,54 @@
+name: Publish Sparkle Appcast
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to update
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  publish-appcast:
+    runs-on: macos-15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve Sparkle tools
+        run: swift package resolve
+
+      - name: Download update archive
+        run: |
+          mkdir -p update-assets
+          gh release download "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern 'Skin-Tone-Studio-*.zip' \
+            --dir update-assets
+          test "$(find update-assets -maxdepth 1 -name 'Skin-Tone-Studio-*.zip' | wc -l | tr -d ' ')" = "1"
+
+      - name: Generate signed appcast
+        run: |
+          printf '%s' "$SPARKLE_PRIVATE_KEY" | \
+            .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+              --ed-key-file - \
+              --download-url-prefix "https://github.com/$GITHUB_REPOSITORY/releases/download/$RELEASE_TAG/" \
+              --link "https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" \
+              --maximum-versions 1 \
+              --maximum-deltas 0 \
+              update-assets
+
+      - name: Attach appcast to release
+        run: |
+          gh release upload "$RELEASE_TAG" update-assets/appcast.xml \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --latest

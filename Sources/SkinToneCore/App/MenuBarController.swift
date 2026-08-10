@@ -15,6 +15,7 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        _ = UpdateController.shared
         installStatusItem()
         let center = NotificationCenter.default
         notificationTokens.append(center.addObserver(
@@ -99,6 +100,12 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         syncStartupMenuItem()
 
         menu.addItem(.separator())
+        let updates = NSMenuItem(title: "Check for Updates…",
+                                 action: #selector(checkForUpdatesFromMenu), keyEquivalent: "")
+        updates.target = self
+        menu.addItem(updates)
+
+        menu.addItem(.separator())
         let quit = NSMenuItem(title: "Quit Skin Tone Studio", action: #selector(quitFromMenu), keyEquivalent: "q")
         quit.target = self
         menu.addItem(quit)
@@ -139,6 +146,10 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
 
     @objc private func quitFromMenu() {
         NSApp.terminate(nil)
+    }
+
+    @objc private func checkForUpdatesFromMenu() {
+        UpdateController.shared.checkForUpdates()
     }
 
     private func showWindow() {
