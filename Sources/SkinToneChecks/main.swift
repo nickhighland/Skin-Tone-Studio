@@ -125,8 +125,10 @@ if CommandLine.arguments.contains("--hardware") {
         do {
             let controller = try UVCController(device: camera)
             let c = controller.capabilities
+            let current = controller.currentHardwareSettings()
             print("UVC hardware: \(camera.localizedName)")
             print("  manual focus: \(c.focus != nil), autofocus: \(c.autoFocus)")
+            print("  current focus mode: \(current.autoFocus ? "automatic" : "manual"), position: \(String(format: "%.3f", current.focus))")
             print("  exposure: \(c.exposure != nil), gain: \(c.gain != nil)")
             print("  white balance: \(c.whiteBalance != nil), hue: \(c.hue != nil), saturation: \(c.saturation != nil)")
             print("  powerline frequency: \(c.powerLineFrequency), auto mode: \(c.powerLineAutoSupported)")
@@ -134,7 +136,7 @@ if CommandLine.arguments.contains("--hardware") {
                 let writes = try controller.verifyRealtimeWritePath()
                 print("  state-neutral live writes verified: \(writes)")
                 let focusLocked = try controller.verifyManualFocusPath()
-                print("  manual-focus transition verified: \(focusLocked)")
+                print("  manual-focus launch stabilization verified: \(focusLocked)")
                 let skinToneControls = try controller.verifySkinToneCorrectionPath()
                 print("  visibly distinct skin-tone controls verified: \(skinToneControls)")
                 check(!c.autoFocus || c.focus == nil || focusLocked,
