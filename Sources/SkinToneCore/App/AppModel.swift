@@ -114,6 +114,8 @@ public final class AppModel: ObservableObject {
         capabilities = CameraCapabilities()
         controlStatus = .checking
         uvcController = nil
+        colorApplyWork?.cancel()
+        focusApplyWork?.cancel()
 
         isRestoringProfile = true
         if let saved = sessionStore.settings(for: id) {
@@ -127,11 +129,24 @@ public final class AppModel: ObservableObject {
         }
         isRestoringProfile = false
 
-        captureEngine.start(device: device) { [weak self] result in
-            if case .failure(let error) = result { self?.message = error.localizedDescription }
-        }
-
         let expectedID = id
+        captureEngine.start(device: device) { [weak self] captureResult in
+            Task { @MainActor in
+                guard let self, self.selectedCameraID == expectedID else { return }
+                switch captureResult {
+                case .success:
+                    self.connectController(to: device, expectedID: expectedID)
+                case .failure(let error):
+                    self.controlStatus = .previewOnly(error.localizedDescription)
+                    self.message = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    /// Opens the UVC control channel only after AVFoundation has started streaming. Some cameras
+    /// reset their lens controls as the stream comes online and would otherwise discard launch writes.
+    private func connectController(to device: AVCaptureDevice, expectedID: String) {
         hardwareQueue.async { [weak self] in
             let result = Result {
                 let controller = try UVCController(device: device)
@@ -175,6 +190,9 @@ public final class AppModel: ObservableObject {
         let focus = hardwareSettings.focus
         performHardwareAction { controller in
             try controller.applyFocusMode(autoFocus: enabled, normalizedFocus: focus)
+            if !enabled {
+                try controller.stabilizeManualFocus(normalizedFocus: focus)
+            }
         }
     }
 
@@ -185,7 +203,7 @@ public final class AppModel: ObservableObject {
         let box = DispatchWorkBox()
         let work = DispatchWorkItem { [weak self] in
             guard box.value?.isCancelled == false else { return }
-            do { try controller.setFocus(normalized: focus) }
+            do { try controller.reassertManualFocus(normalizedFocus: focus) }
             catch { Task { @MainActor in self?.message = error.localizedDescription } }
         }
         box.value = work
@@ -256,6 +274,9 @@ public final class AppModel: ObservableObject {
                     try controller.applyPrecisionAntiFlicker(frequency: hardware.flickerFrequency)
                 } else {
                     try controller.setPowerLineMode(hardware.powerLineMode)
+                }
+                if !hardware.autoFocus {
+                    try controller.stabilizeManualFocus(normalizedFocus: hardware.focus)
                 }
             } catch {
                 Task { @MainActor in self?.message = error.localizedDescription }

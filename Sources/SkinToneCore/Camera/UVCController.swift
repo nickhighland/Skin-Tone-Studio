@@ -136,6 +136,45 @@ public final class UVCController: @unchecked Sendable {
         try write(range.rawValue(for: normalized), to: .focus)
     }
 
+    /// Reasserts manual mode without briefly enabling autofocus. This is safe for live slider
+    /// changes and for delayed launch retries after the camera's stream has initialized.
+    public func reassertManualFocus(normalizedFocus: Double) throws {
+        guard capabilities.focus != nil else { return }
+        if capabilities.autoFocus {
+            try setAutoFocus(false)
+            Thread.sleep(forTimeInterval: 0.050)
+        }
+        try setFocus(normalized: normalizedFocus)
+    }
+
+    /// Keeps the desired manual focus active during the short period when webcam firmware may
+    /// reset lens controls after launch, login, or a USB power cycle.
+    public func stabilizeManualFocus(normalizedFocus: Double) throws {
+        guard let range = capabilities.focus else { return }
+
+        // These are intervals between writes, covering roughly the first two seconds of streaming.
+        for delay in [0.25, 0.65, 1.10] {
+            Thread.sleep(forTimeInterval: delay)
+            try reassertManualFocus(normalizedFocus: normalizedFocus)
+        }
+
+        if capabilities.autoFocus,
+           (try? read(.getCurrent, from: .autoFocus)) != 0 {
+            throw UVCCameraError.requestFailed(kIOReturnNotReady)
+        }
+
+        let target = range.rawValue(for: normalizedFocus)
+        if let actual = try? read(.getCurrent, from: .focus),
+           abs(actual - target) > max(1, range.step) {
+            try reassertManualFocus(normalizedFocus: normalizedFocus)
+            Thread.sleep(forTimeInterval: 0.050)
+            if let finalValue = try? read(.getCurrent, from: .focus),
+               abs(finalValue - target) > max(1, range.step) {
+                throw UVCCameraError.requestFailed(kIOReturnNotReady)
+            }
+        }
+    }
+
     /// Switches the camera into a stable focus mode before applying a manual focus position.
     /// Some UVC webcams ignore focus writes until autofocus has completed an explicit on-to-off transition.
     public func applyFocusMode(autoFocus: Bool, normalizedFocus: Double) throws {
@@ -362,6 +401,7 @@ public final class UVCController: @unchecked Sendable {
 
         try applyFocusMode(autoFocus: false,
                            normalizedFocus: range.normalizedValue(for: originalFocus))
+        try stabilizeManualFocus(normalizedFocus: range.normalizedValue(for: originalFocus))
         let autofocusDisabled = try read(.getCurrent, from: .autoFocus) == 0
         let appliedFocus = try read(.getCurrent, from: .focus)
         return autofocusDisabled && abs(appliedFocus - originalFocus) <= max(1, range.step)
