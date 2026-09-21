@@ -147,6 +147,24 @@ public final class UVCController: @unchecked Sendable {
         try setFocus(normalized: normalizedFocus)
     }
 
+    /// Reads the camera's focus mode and position, then repairs them only when the firmware
+    /// has drifted away from the requested manual value. Some webcams silently turn autofocus
+    /// back on after the stream has been running for a while, so this check is intentionally
+    /// safe to run periodically while the preview is live.
+    public func maintainManualFocus(normalizedFocus: Double) throws {
+        guard let range = capabilities.focus else { return }
+        let target = range.rawValue(for: normalizedFocus)
+        let autofocusEnabled = capabilities.autoFocus
+            ? (try? read(.getCurrent, from: .autoFocus)).map { $0 != 0 } ?? true
+            : false
+        let focusDrifted = (try? read(.getCurrent, from: .focus))
+            .map { abs($0 - target) > max(1, range.step) } ?? true
+
+        if autofocusEnabled || focusDrifted {
+            try reassertManualFocus(normalizedFocus: normalizedFocus)
+        }
+    }
+
     /// Keeps the desired manual focus active during the short period when webcam firmware may
     /// reset lens controls after launch, login, or a USB power cycle.
     public func stabilizeManualFocus(normalizedFocus: Double) throws {
@@ -402,6 +420,31 @@ public final class UVCController: @unchecked Sendable {
         try applyFocusMode(autoFocus: false,
                            normalizedFocus: range.normalizedValue(for: originalFocus))
         try stabilizeManualFocus(normalizedFocus: range.normalizedValue(for: originalFocus))
+        let autofocusDisabled = try read(.getCurrent, from: .autoFocus) == 0
+        let appliedFocus = try read(.getCurrent, from: .focus)
+        return autofocusDisabled && abs(appliedFocus - originalFocus) <= max(1, range.step)
+    }
+
+    /// Simulates a webcam re-enabling autofocus and verifies that the periodic maintenance
+    /// path restores the selected manual focus value.
+    @discardableResult public func verifyManualFocusMaintenancePath() throws -> Bool {
+        guard capabilities.autoFocus, let range = capabilities.focus else { return false }
+        let originalAutoFocus = try read(.getCurrent, from: .autoFocus)
+        let originalFocus = try read(.getCurrent, from: .focus)
+        let normalizedFocus = range.normalizedValue(for: originalFocus)
+        defer {
+            if originalAutoFocus != 0 {
+                try? setAutoFocus(true)
+            } else {
+                try? applyFocusMode(autoFocus: false, normalizedFocus: normalizedFocus)
+            }
+            try? setFocus(normalized: normalizedFocus)
+        }
+
+        try applyFocusMode(autoFocus: false, normalizedFocus: normalizedFocus)
+        try setAutoFocus(true)
+        try maintainManualFocus(normalizedFocus: normalizedFocus)
+
         let autofocusDisabled = try read(.getCurrent, from: .autoFocus) == 0
         let appliedFocus = try read(.getCurrent, from: .focus)
         return autofocusDisabled && abs(appliedFocus - originalFocus) <= max(1, range.step)
