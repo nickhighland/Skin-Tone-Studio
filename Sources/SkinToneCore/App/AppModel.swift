@@ -52,6 +52,7 @@ public final class AppModel: ObservableObject {
     private var notificationTokens: [NSObjectProtocol] = []
     private var colorApplyWork: DispatchWorkItem?
     private var focusApplyWork: DispatchWorkItem?
+    private var focusWatchdogTimer: DispatchSourceTimer?
     private var isRestoringProfile = false
     private var pendingProfile: StudioProfile?
     private let sessionStore: CameraSessionStore
@@ -71,6 +72,7 @@ public final class AppModel: ObservableObject {
     }
 
     deinit {
+        focusWatchdogTimer?.cancel()
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
 
@@ -97,6 +99,10 @@ public final class AppModel: ObservableObject {
         cameras = devices.map {
             CameraChoice(id: $0.uniqueID, name: $0.localizedName, isExternal: $0.deviceType == .external)
         }
+        if !selectedCameraID.isEmpty, devicesByID[selectedCameraID] == nil {
+            stopManualFocusWatchdog()
+            uvcController = nil
+        }
         if selectedCameraID.isEmpty || devicesByID[selectedCameraID] == nil {
             if let rememberedID = sessionStore.selectedCameraID, devicesByID[rememberedID] != nil {
                 selectedCameraID = rememberedID
@@ -116,6 +122,7 @@ public final class AppModel: ObservableObject {
         uvcController = nil
         colorApplyWork?.cancel()
         focusApplyWork?.cancel()
+        stopManualFocusWatchdog()
 
         isRestoringProfile = true
         if let saved = sessionStore.settings(for: id) {
@@ -173,6 +180,7 @@ public final class AppModel: ObservableObject {
                             self.hardwareSettings.powerLineMode = powerLineMode
                         }
                         self.scheduleRealtimeColorApply()
+                        self.startManualFocusWatchdog(for: controller)
                     }
                 case .failure(let error):
                     self.controlStatus = .previewOnly(error.localizedDescription)
@@ -188,17 +196,27 @@ public final class AppModel: ObservableObject {
     public func applyAutoFocus() {
         let enabled = hardwareSettings.autoFocus
         let focus = hardwareSettings.focus
-        performHardwareAction { controller in
+        stopManualFocusWatchdog()
+        performHardwareAction { [weak self] controller in
             try controller.applyFocusMode(autoFocus: enabled, normalizedFocus: focus)
             if !enabled {
                 try controller.stabilizeManualFocus(normalizedFocus: focus)
+                Task { @MainActor [weak self] in
+                    guard let self, self.uvcController === controller else { return }
+                    self.startManualFocusWatchdog(for: controller)
+                }
             }
         }
     }
 
     public func applyFocus() {
         guard let controller = uvcController else { return }
+        guard !hardwareSettings.autoFocus else {
+            stopManualFocusWatchdog()
+            return
+        }
         let focus = hardwareSettings.focus
+        startManualFocusWatchdog(for: controller)
         focusApplyWork?.cancel()
         let box = DispatchWorkBox()
         let work = DispatchWorkItem { [weak self] in
@@ -224,6 +242,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func resetCamera() {
+        stopManualFocusWatchdog()
         guard let controller = uvcController else {
             message = "This camera does not expose compatible UVC hardware controls."
             return
@@ -239,6 +258,7 @@ public final class AppModel: ObservableObject {
                     guard let self else { return }
                     self.colorSettings = .cameraNeutral
                     self.hardwareSettings = hardware
+                    self.startManualFocusWatchdog(for: controller)
                     self.message = "Camera settings restored to their factory defaults."
                 }
             } catch {
@@ -250,6 +270,7 @@ public final class AppModel: ObservableObject {
     public func load(_ profile: StudioProfile) {
         colorApplyWork?.cancel()
         focusApplyWork?.cancel()
+        stopManualFocusWatchdog()
         pendingProfile = profile
         isRestoringProfile = true
         colorSettings = profile.color
@@ -264,6 +285,7 @@ public final class AppModel: ObservableObject {
         pendingProfile = nil
         let color = profile.color
         let hardware = profile.hardware
+        let expectedCameraID = selectedCameraID
         hardwareQueue.async { [weak self] in
             do {
                 try controller.resetColorToDefaults()
@@ -277,6 +299,12 @@ public final class AppModel: ObservableObject {
                 }
                 if !hardware.autoFocus {
                     try controller.stabilizeManualFocus(normalizedFocus: hardware.focus)
+                    Task { @MainActor [weak self] in
+                        guard let self,
+                              self.selectedCameraID == expectedCameraID,
+                              self.uvcController === controller else { return }
+                        self.startManualFocusWatchdog(for: controller)
+                    }
                 }
             } catch {
                 Task { @MainActor in self?.message = error.localizedDescription }
@@ -317,5 +345,37 @@ public final class AppModel: ObservableObject {
                 Task { @MainActor in self?.message = error.localizedDescription }
             }
         }
+    }
+
+    /// Keeps manual focus locked after webcam firmware re-enables autofocus or changes the
+    /// focus register in response to a USB/streaming event. The watchdog only reads the two
+    /// focus controls on each tick and writes them back when a drift is detected.
+    private func startManualFocusWatchdog(for controller: UVCController) {
+        stopManualFocusWatchdog()
+        guard uvcController === controller,
+              capabilities.focus != nil,
+              !hardwareSettings.autoFocus else { return }
+
+        let focus = hardwareSettings.focus
+        let timer = DispatchSource.makeTimerSource(queue: hardwareQueue)
+        timer.schedule(deadline: .now() + .milliseconds(750),
+                        repeating: .milliseconds(750),
+                        leeway: .milliseconds(120))
+        timer.setEventHandler { [controller] in
+            do {
+                try controller.maintainManualFocus(normalizedFocus: focus)
+            } catch {
+                // A transient USB error should not interrupt the live preview. The next tick
+                // retries, while explicit user actions still surface their own errors in the UI.
+            }
+        }
+        focusWatchdogTimer = timer
+        timer.resume()
+    }
+
+    private func stopManualFocusWatchdog() {
+        focusWatchdogTimer?.setEventHandler {}
+        focusWatchdogTimer?.cancel()
+        focusWatchdogTimer = nil
     }
 }

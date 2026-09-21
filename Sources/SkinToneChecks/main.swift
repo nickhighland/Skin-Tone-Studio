@@ -137,10 +137,14 @@ if CommandLine.arguments.contains("--hardware") {
                 print("  state-neutral live writes verified: \(writes)")
                 let focusLocked = try controller.verifyManualFocusPath()
                 print("  manual-focus launch stabilization verified: \(focusLocked)")
+                let focusWatchdog = try controller.verifyManualFocusMaintenancePath()
+                print("  manual-focus watchdog recovery verified: \(focusWatchdog)")
                 let skinToneControls = try controller.verifySkinToneCorrectionPath()
                 print("  visibly distinct skin-tone controls verified: \(skinToneControls)")
                 check(!c.autoFocus || c.focus == nil || focusLocked,
                       "Manual focus mode did not remain locked after the autofocus transition")
+                check(!c.autoFocus || c.focus == nil || focusWatchdog,
+                      "Manual focus watchdog did not recover after autofocus was re-enabled")
                 check(c.whiteBalance == nil && c.hue == nil || skinToneControls > 0,
                       "Skin-tone correction did not produce distinct UVC control values")
             }
