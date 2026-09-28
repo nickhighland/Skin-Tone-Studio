@@ -56,6 +56,13 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         ) { [weak self] _ in
             StartupSettings.shared.refresh()
             self?.syncStartupMenuItem()
+            guard let self, NSApp.activationPolicy() == .regular else { return }
+            // A Dock click can activate the app without delivering applicationShouldHandleReopen
+            // when the window was hidden with orderOut. Treat an active app with no visible main
+            // window as a reopen request as well.
+            if self.mainWindow?.isVisible != true || (self.mainWindow?.alphaValue ?? 0) < 0.01 {
+                DispatchQueue.main.async { [weak self] in self?.showWindow() }
+            }
         })
 
         DispatchQueue.main.async { [weak self] in
@@ -96,6 +103,9 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     private func remember(window: NSWindow) {
         guard isApplicationWindow(window) else { return }
         window.isReleasedWhenClosed = false
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        window.collectionBehavior.insert(.canJoinAllSpaces)
+        window.collectionBehavior.insert(.fullScreenAuxiliary)
         primaryWindow = window
     }
 
@@ -191,16 +201,45 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
 
         remember(window: window)
         NSApp.setActivationPolicy(.regular)
+        NSApp.unhide(nil)
         // Activation-policy changes are asynchronous on macOS. Bringing the window forward on
         // the next turn makes reopening reliable after orderOut/deminiaturize from the menu bar.
         DispatchQueue.main.async { [weak self, weak window] in
             guard let self, let window else { return }
             self.remember(window: window)
             if window.isMiniaturized { window.deminiaturize(nil) }
+            self.ensureWindowIsOnScreen(window)
+            window.alphaValue = 1
             NSApp.activate(ignoringOtherApps: true)
             window.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    private func ensureWindowIsOnScreen(_ window: NSWindow) {
+        let visibleFrames = NSScreen.screens.map(\.visibleFrame)
+        guard !visibleFrames.isEmpty else { return }
+
+        let frame = window.frame
+        let hasUsableIntersection = visibleFrames.contains { visibleFrame in
+            let intersection = visibleFrame.intersection(frame)
+            return intersection.width >= min(160, max(1, frame.width * 0.25))
+                && intersection.height >= min(120, max(1, frame.height * 0.25))
+        }
+        guard !hasUsableIntersection else { return }
+
+        let visibleFrame = (window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame)
+            ?? visibleFrames[0]
+        let width = min(max(frame.width, 900), visibleFrame.width * 0.9)
+        let height = min(max(frame.height, 620), visibleFrame.height * 0.9)
+        let centered = NSRect(
+            x: visibleFrame.midX - width / 2,
+            y: visibleFrame.midY - height / 2,
+            width: width,
+            height: height
+        )
+        window.setFrame(centered, display: false)
     }
 
     private func enterMenuBarMode() {
