@@ -9,6 +9,7 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var startupMenuItem: NSMenuItem?
     private var notificationTokens: [NSObjectProtocol] = []
+    private var primaryWindow: NSWindow?
 
     public override init() {
         super.init()
@@ -21,26 +22,34 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         notificationTokens.append(center.addObserver(
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard let window = note.object as? NSWindow, window.canBecomeMain else { return }
-            window.isReleasedWhenClosed = false
-            self?.setWindowVisibleState()
+            guard let self, let window = note.object as? NSWindow,
+                  self.isApplicationWindow(window) else { return }
+            self.remember(window: window)
+            self.setWindowVisibleState()
         })
         notificationTokens.append(center.addObserver(
             forName: NSWindow.didMiniaturizeNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard let window = note.object as? NSWindow, window.canBecomeMain else { return }
-            DispatchQueue.main.async {
-                window.deminiaturize(nil)
+            guard let self, let window = note.object as? NSWindow,
+                  self.isApplicationWindow(window) else { return }
+            self.remember(window: window)
+            // Keep the process alive in the menu bar, but remove the miniaturized window from
+            // the Dock. Doing this on the next run-loop turn avoids racing AppKit's minimize
+            // animation and leaves a normal window ready to be shown again.
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window else { return }
+                if window.isMiniaturized { window.deminiaturize(nil) }
                 window.orderOut(nil)
-                self?.enterMenuBarMode()
+                self.enterMenuBarMode()
             }
         })
         notificationTokens.append(center.addObserver(
             forName: NSWindow.willCloseNotification, object: nil, queue: .main
         ) { [weak self] note in
-            guard let window = note.object as? NSWindow, window.canBecomeMain else { return }
-            window.isReleasedWhenClosed = false
-            DispatchQueue.main.async { self?.enterMenuBarMode() }
+            guard let self, let window = note.object as? NSWindow,
+                  self.isApplicationWindow(window) else { return }
+            self.remember(window: window)
+            DispatchQueue.main.async { self.enterMenuBarMode() }
         })
         notificationTokens.append(center.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
@@ -50,7 +59,9 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         })
 
         DispatchQueue.main.async { [weak self] in
-            self?.mainWindow?.isReleasedWhenClosed = false
+            if let window = self?.mainWindow {
+                self?.remember(window: window)
+            }
         }
     }
 
@@ -68,7 +79,24 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private var mainWindow: NSWindow? {
-        NSApp.windows.first { $0.canBecomeMain && !($0 is NSPanel) }
+        if let primaryWindow, isApplicationWindow(primaryWindow) {
+            return primaryWindow
+        }
+
+        let candidate = NSApp.windows.first(where: { $0.canBecomeMain && isApplicationWindow($0) })
+            ?? NSApp.windows.first(where: isApplicationWindow)
+        if let candidate { remember(window: candidate) }
+        return candidate
+    }
+
+    private func isApplicationWindow(_ window: NSWindow) -> Bool {
+        !(window is NSPanel) && window.contentView != nil
+    }
+
+    private func remember(window: NSWindow) {
+        guard isApplicationWindow(window) else { return }
+        window.isReleasedWhenClosed = false
+        primaryWindow = window
     }
 
     private func installStatusItem() {
@@ -153,11 +181,24 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func showWindow() {
+        guard let window = mainWindow else {
+            // WindowGroup can finish creating its window one run-loop turn after the menu-bar
+            // delegate. Retry once the scene has had a chance to materialize it.
+            NSApp.setActivationPolicy(.regular)
+            DispatchQueue.main.async { [weak self] in self?.showWindow() }
+            return
+        }
+
+        remember(window: window)
         NSApp.setActivationPolicy(.regular)
-        NSApp.activate(ignoringOtherApps: true)
-        if let window = mainWindow {
-            window.isReleasedWhenClosed = false
-            window.deminiaturize(nil)
+        // Activation-policy changes are asynchronous on macOS. Bringing the window forward on
+        // the next turn makes reopening reliable after orderOut/deminiaturize from the menu bar.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.remember(window: window)
+            if window.isMiniaturized { window.deminiaturize(nil) }
+            NSApp.activate(ignoringOtherApps: true)
+            window.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
         }
     }
