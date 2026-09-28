@@ -103,9 +103,6 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     private func remember(window: NSWindow) {
         guard isApplicationWindow(window) else { return }
         window.isReleasedWhenClosed = false
-        window.collectionBehavior.insert(.moveToActiveSpace)
-        window.collectionBehavior.insert(.canJoinAllSpaces)
-        window.collectionBehavior.insert(.fullScreenAuxiliary)
         primaryWindow = window
     }
 
