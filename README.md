@@ -25,7 +25,7 @@ Not every webcam sees every complexion accurately. Skin Tone Studio is an uplift
 
 Download `Skin Tone Studio.dmg` from the [latest GitHub Release](https://github.com/nickhighland/Skin-Tone-Studio/releases/latest), open it, and drag **Skin Tone Studio** into **Applications**. No Terminal commands are required.
 
-The current community build is ad-hoc signed rather than Apple-notarized. On first launch, Control-click the app in Applications and choose **Open**, then confirm **Open** in macOS.
+Releases are signed with a Developer ID certificate and notarized by Apple, so the app opens normally on first launch.
 
 ## Build from source
 
@@ -55,10 +55,12 @@ Verify live UVC writes by writing supported controls' current values back unchan
 swift run SkinToneChecks --hardware --hardware-write
 ```
 
-Create the versioned ZIP/DMG and signed Sparkle appcast used by a GitHub Release:
+`build-app.sh` signs with the first "Developer ID Application" certificate in your keychain, or ad hoc if there is none (`SIGN_IDENTITY=-` forces ad hoc).
+
+Create the notarized, versioned ZIP/DMG and signed Sparkle appcast used by a GitHub Release. `NOTARY_PROFILE` names a profile saved with `xcrun notarytool store-credentials`:
 
 ```sh
-./scripts/build-app.sh
+NOTARY_PROFILE=SkinToneStudio ./scripts/build-app.sh
 ./scripts/generate-appcast.sh
 ```
 
