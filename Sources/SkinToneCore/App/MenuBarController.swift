@@ -11,9 +11,14 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     private var startupMenuItem: NSMenuItem?
     private var notificationTokens: [NSObjectProtocol] = []
     private var primaryWindow: NSWindow?
-    private weak var windowAwaitingHide: NSWindow?
+    private var windowDelegateProxy: WindowDelegateProxy?
     private var openMainWindow: OpenWindowAction?
     private var isRecreatingWindow = false
+    private var showWhenRegistered = false
+    /// A hide that has to wait for an AppKit transition (deminiaturize or leaving full screen)
+    /// to finish. Bound to the notification that completes it so an unrelated later transition
+    /// can't trigger a stale hide.
+    private var pendingHide: (window: NSWindow, completion: Notification.Name)?
 
     /// Scene id of the app's main `WindowGroup`, used to recreate the window if it was closed.
     public static let mainWindowID = "main"
@@ -29,6 +34,15 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     /// controller always tracks the real app window rather than guessing from `NSApp.windows`
     /// (which also contains the status-item window and Sparkle's update windows).
     func register(contentWindow window: NSWindow, openWindow: OpenWindowAction) {
+        openMainWindow = openWindow
+        isRecreatingWindow = false
+        if let primaryWindow, primaryWindow !== window {
+            // State restoration or a racing recreate produced a second scene window. Each one
+            // runs its own AppModel against the same camera, so keep the first and close this one.
+            DispatchQueue.main.async { window.close() }
+            return
+        }
+
         window.isReleasedWhenClosed = false
         window.title = "Skin Tone Studio"
         window.sharingType = .readOnly
@@ -37,21 +51,47 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         // (.canJoinAllSpaces must not be combined with this; AppKit raises if both are set.)
         window.collectionBehavior.remove(.canJoinAllSpaces)
         window.collectionBehavior.insert(.moveToActiveSpace)
-        routeTitleBarButtonsToHide(in: window)
+        interceptHideRequests(in: window)
         primaryWindow = window
-        openMainWindow = openWindow
-        isRecreatingWindow = false
+
+        if showWhenRegistered {
+            showWhenRegistered = false
+            showWindow()
+        }
     }
 
-    /// Minimizing into the Dock and then dropping to accessory mode leaves AppKit with a
-    /// miniaturized window whose Dock tile no longer exists, and it can't be restored. Closing
-    /// tears down the SwiftUI scene (and the camera session with it). Route both title-bar
-    /// buttons straight to "hide to menu bar" instead.
-    private func routeTitleBarButtonsToHide(in window: NSWindow) {
-        for kind in [NSWindow.ButtonType.miniaturizeButton, .closeButton] {
-            guard let button = window.standardWindowButton(kind) else { continue }
+    /// Called when the SwiftUI content leaves its window, i.e. the scene was torn down. The
+    /// window can no longer be shown, so the next show request recreates the scene instead.
+    func unregister(contentWindow window: NSWindow) {
+        guard window === primaryWindow else { return }
+        primaryWindow = nil
+        windowDelegateProxy = nil
+        if pendingHide?.window === window { pendingHide = nil }
+    }
+
+    /// Closing or minimizing into the Dock must never tear down or strand the window: minimizing
+    /// and then dropping to accessory mode leaves a miniaturized window whose Dock tile no longer
+    /// exists. Close requests (red button, Cmd-W, accessibility) are caught at the window-delegate
+    /// level; the minimize button has no delegate veto, so it is routed to the hide action.
+    /// Re-applied whenever the window becomes key or leaves full screen, in case SwiftUI replaces
+    /// its delegate or rebuilds the title bar.
+    private func interceptHideRequests(in window: NSWindow) {
+        if window.delegate !== windowDelegateProxy || windowDelegateProxy == nil {
+            let proxy = WindowDelegateProxy(wrapping: window.delegate, shouldClose: { [weak self] window in
+                guard let self, window === self.primaryWindow else { return true }
+                self.hide(window)
+                return false
+            }, didFailToExitFullScreen: { [weak self] window in
+                // The window stayed in full screen; drop the hide rather than let a later,
+                // unrelated full-screen exit trigger it.
+                if self?.pendingHide?.window === window { self?.pendingHide = nil }
+            })
+            windowDelegateProxy = proxy
+            window.delegate = proxy
+        }
+        if let button = window.standardWindowButton(.miniaturizeButton) {
             button.target = self
-            button.action = #selector(hideWindowFromMenu)
+            button.action = #selector(hideWindowFromTitleBar(_:))
         }
     }
 
@@ -63,60 +103,49 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
             forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main
         ) { [weak self] note in
             guard let self, let window = note.object as? NSWindow,
-                  window === self.mainWindow else { return }
-            // SwiftUI can rebuild the title bar (e.g. after full screen); keep the rerouting.
-            self.routeTitleBarButtonsToHide(in: window)
+                  window === self.primaryWindow else { return }
+            self.interceptHideRequests(in: window)
             self.setWindowVisibleState()
         })
         notificationTokens.append(center.addObserver(
             forName: NSWindow.didMiniaturizeNotification, object: nil, queue: .main
         ) { [weak self] note in
-            // Fallback for minimize paths that bypass the title-bar button (Cmd-M, Window menu,
+            // Fallback for minimize paths that bypass the title-bar button (Window menu,
             // title-bar double-click). Restore the window first and only hide it once AppKit
             // reports the deminiaturize finished; hiding mid-animation strands the window.
             guard let self, let window = note.object as? NSWindow,
-                  window === self.mainWindow else { return }
-            self.windowAwaitingHide = window
+                  window === self.primaryWindow else { return }
+            self.pendingHide = (window, NSWindow.didDeminiaturizeNotification)
             window.deminiaturize(nil)
         })
-        notificationTokens.append(center.addObserver(
-            forName: NSWindow.didDeminiaturizeNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let self, let window = note.object as? NSWindow,
-                  window === self.windowAwaitingHide else { return }
-            self.windowAwaitingHide = nil
-            window.orderOut(nil)
-            self.enterMenuBarMode()
-        })
-        notificationTokens.append(center.addObserver(
-            forName: NSWindow.didExitFullScreenNotification, object: nil, queue: .main
-        ) { [weak self] note in
-            guard let self, let window = note.object as? NSWindow,
-                  window === self.windowAwaitingHide else { return }
-            self.windowAwaitingHide = nil
-            window.orderOut(nil)
-            self.enterMenuBarMode()
-        })
+        for name in [NSWindow.didDeminiaturizeNotification, NSWindow.didExitFullScreenNotification] {
+            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                self?.completePendingHide(note)
+            })
+        }
         notificationTokens.append(center.addObserver(
             forName: NSWindow.willCloseNotification, object: nil, queue: .main
         ) { [weak self] note in
+            // Only programmatic closes get here; the delegate proxy vetoes user closes. The
+            // window is kept (isReleasedWhenClosed is false) and can be shown again. If SwiftUI
+            // tears the scene down as well, the registrar reports it through unregister.
             guard let self, let window = note.object as? NSWindow,
-                  window === self.mainWindow else { return }
-            // Cmd-W still closes for real, and SwiftUI discards the scene's content. Forget the
-            // window so the next show recreates it instead of fronting an empty shell.
-            self.primaryWindow = nil
-            DispatchQueue.main.async { self.enterMenuBarMode() }
+                  window === self.primaryWindow else { return }
+            DispatchQueue.main.async { [weak self] in self?.enterMenuBarMode() }
         })
         notificationTokens.append(center.addObserver(
             forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
         ) { [weak self] _ in
             StartupSettings.shared.refresh()
             self?.syncStartupMenuItem()
-            guard let self, NSApp.activationPolicy() == .regular else { return }
+            guard let self, NSApp.activationPolicy() == .regular,
+                  // Mid-hide (e.g. between minimize and deminiaturize) the window is briefly
+                  // invisible; that is not a reopen request.
+                  self.pendingHide == nil else { return }
             // A Dock click can activate the app without delivering applicationShouldHandleReopen
             // when the window was hidden with orderOut. Treat an active app with no visible main
             // window as a reopen request as well.
-            if self.mainWindow?.isVisible != true || (self.mainWindow?.alphaValue ?? 0) < 0.01 {
+            if self.primaryWindow?.isVisible != true || (self.primaryWindow?.alphaValue ?? 0) < 0.01 {
                 DispatchQueue.main.async { [weak self] in self?.showWindow() }
             }
         })
@@ -134,8 +163,6 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     public func applicationWillTerminate(_ notification: Notification) {
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
     }
-
-    private var mainWindow: NSWindow? { primaryWindow }
 
     private func installStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -183,21 +210,43 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc private func showWindowFromMenu() { showWindow() }
 
     @objc private func hideWindowFromMenu() {
-        guard let window = mainWindow else { return }
+        guard let primaryWindow else { return }
+        hide(primaryWindow)
+    }
+
+    @objc private func hideWindowFromTitleBar(_ sender: NSButton) {
+        guard let window = sender.window else { return }
+        guard window === primaryWindow else {
+            window.miniaturize(nil)
+            return
+        }
+        hide(window)
+    }
+
+    private func hide(_ window: NSWindow) {
         if window.isMiniaturized {
-            windowAwaitingHide = window
+            pendingHide = (window, NSWindow.didDeminiaturizeNotification)
             window.deminiaturize(nil)
             return
         }
         // A full-screen window owns its own Space; hiding it there strands that Space. Leave full
         // screen first and hide once AppKit reports the transition finished.
         if window.styleMask.contains(.fullScreen) {
-            windowAwaitingHide = window
+            pendingHide = (window, NSWindow.didExitFullScreenNotification)
             window.toggleFullScreen(nil)
             return
         }
+        pendingHide = nil
         window.orderOut(nil)
         enterMenuBarMode()
+    }
+
+    private func completePendingHide(_ note: Notification) {
+        guard let pendingHide, let window = note.object as? NSWindow,
+              window === pendingHide.window, note.name == pendingHide.completion else { return }
+        // Leaving full screen can rebuild the title bar; restore the minimize-button routing.
+        interceptHideRequests(in: window)
+        hide(window)
     }
 
     @objc private func resetCameraFromMenu() {
@@ -231,23 +280,18 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
         UpdateController.shared.checkForUpdates()
     }
 
-    private func showWindow(retriesRemaining: Int = 10) {
-        guard let window = mainWindow else {
-            // WindowGroup can finish creating its window one run-loop turn after the menu-bar
-            // delegate. Retry once the scene has had a chance to materialize it.
-            NSApp.setActivationPolicy(.regular)
-            guard retriesRemaining > 0 else { return }
-            if !isRecreatingWindow, let openMainWindow {
-                isRecreatingWindow = true
-                openMainWindow(id: Self.mainWindowID)
-            }
-            DispatchQueue.main.async { [weak self] in
-                self?.showWindow(retriesRemaining: retriesRemaining - 1)
-            }
+    private func showWindow() {
+        guard let window = primaryWindow else {
+            // No live window: the scene is still being created at launch, or it was torn down.
+            // Ask SwiftUI for one and show it as soon as it registers. The activation policy is
+            // left alone until then so a Dock icon never appears without a window.
+            showWhenRegistered = true
+            recreateWindowIfNeeded()
             return
         }
 
-        windowAwaitingHide = nil
+        pendingHide = nil
+        interceptHideRequests(in: window)
         NSApp.setActivationPolicy(.regular)
         NSApp.unhide(nil)
         // Activation-policy changes are asynchronous on macOS. Bringing the window forward on
@@ -261,6 +305,18 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
             window.orderFrontRegardless()
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    private func recreateWindowIfNeeded() {
+        // Before the first registration there is no OpenWindowAction yet; the launch window will
+        // register on its own and pick up showWhenRegistered.
+        guard !isRecreatingWindow, let openMainWindow else { return }
+        isRecreatingWindow = true
+        openMainWindow(id: Self.mainWindowID)
+        // If the scene never registers, allow a later show request to try again.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            self?.isRecreatingWindow = false
         }
     }
 
@@ -294,7 +350,7 @@ public final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func setWindowVisibleState() {
-        if mainWindow?.isVisible == true { NSApp.setActivationPolicy(.regular) }
+        if primaryWindow?.isVisible == true { NSApp.setActivationPolicy(.regular) }
     }
 
     private func syncStartupMenuItem() {
@@ -314,10 +370,51 @@ struct ContentWindowRegistrar: NSViewRepresentable {
     private final class RegistrarView: NSView {
         var openWindow: OpenWindowAction?
 
+        override func viewWillMove(toWindow newWindow: NSWindow?) {
+            super.viewWillMove(toWindow: newWindow)
+            if let window, newWindow !== window {
+                MenuBarController.current?.unregister(contentWindow: window)
+            }
+        }
+
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window, let openWindow else { return }
             MenuBarController.current?.register(contentWindow: window, openWindow: openWindow)
         }
+    }
+}
+
+/// Wraps the window's SwiftUI-owned delegate so close requests can be turned into "hide to menu
+/// bar", while every other delegate message still reaches SwiftUI unchanged.
+private final class WindowDelegateProxy: NSObject, NSWindowDelegate {
+    private let wrapped: NSWindowDelegate?
+    private let shouldClose: (NSWindow) -> Bool
+    private let didFailToExitFullScreen: (NSWindow) -> Void
+
+    init(wrapping delegate: NSWindowDelegate?,
+         shouldClose: @escaping (NSWindow) -> Bool,
+         didFailToExitFullScreen: @escaping (NSWindow) -> Void) {
+        wrapped = delegate
+        self.shouldClose = shouldClose
+        self.didFailToExitFullScreen = didFailToExitFullScreen
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard shouldClose(sender) else { return false }
+        return wrapped?.windowShouldClose?(sender) ?? true
+    }
+
+    func windowDidFailToExitFullScreen(_ window: NSWindow) {
+        didFailToExitFullScreen(window)
+        wrapped?.windowDidFailToExitFullScreen?(window)
+    }
+
+    override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (wrapped?.responds(to: aSelector) ?? false)
+    }
+
+    override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        wrapped?.responds(to: aSelector) == true ? wrapped : super.forwardingTarget(for: aSelector)
     }
 }
