@@ -6,7 +6,7 @@ struct SkinToneStudioApp: App {
     @NSApplicationDelegateAdaptor(MenuBarController.self) private var menuBarController
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: MenuBarController.mainWindowID) {
             ContentView()
                 .preferredColorScheme(nil)
         }

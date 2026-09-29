@@ -33,12 +33,9 @@ public struct ContentView: View {
             }
         }
         .frame(minWidth: 1040, idealWidth: 1180, minHeight: 700, idealHeight: 780)
+        .background(ContentWindowRegistrar())
         .onAppear {
             model.start()
-            DispatchQueue.main.async {
-                NSApp.windows.first?.title = "Skin Tone Studio"
-                NSApp.windows.first?.sharingType = .readOnly
-            }
         }
         .onReceive(NotificationCenter.default.publisher(for: .skinToneStudioCameraReset)) { _ in
             model.resetCamera()
