@@ -1,5 +1,7 @@
 @preconcurrency import AVFoundation
+import AppKit
 import Foundation
+import OSLog
 
 private final class DispatchWorkBox {
     weak var value: DispatchWorkItem?
@@ -26,6 +28,7 @@ public final class AppModel: ObservableObject {
     @Published public var colorSettings = ColorSettings() {
         didSet {
             guard !isRestoringProfile else { return }
+            activityApplyWork?.cancel()
             pendingProfile = nil
             persistCurrentSession()
             scheduleRealtimeColorApply()
@@ -34,6 +37,7 @@ public final class AppModel: ObservableObject {
     @Published public var hardwareSettings = HardwareSettings() {
         didSet {
             guard !isRestoringProfile else { return }
+            activityApplyWork?.cancel()
             pendingProfile = nil
             persistCurrentSession()
         }
@@ -53,6 +57,15 @@ public final class AppModel: ObservableObject {
     private var colorApplyWork: DispatchWorkItem?
     private var focusApplyWork: DispatchWorkItem?
     private var focusWatchdogTimer: DispatchSourceTimer?
+    private var activityApplyWork: DispatchWorkItem?
+    private var workspaceTokens: [NSObjectProtocol] = []
+    private var activeDeviceID: String?
+    private var connectionGeneration = 0
+    private var connectingHardware = false
+    private var hasStarted = false
+    private var isSleeping = false
+    private var hardwareReconnectNotBefore = 0.0
+    private let logger = Logger(subsystem: "studio.skintone.camera", category: "Hardware")
     private var isRestoringProfile = false
     private var pendingProfile: StudioProfile?
     private let sessionStore: CameraSessionStore
@@ -65,18 +78,49 @@ public final class AppModel: ObservableObject {
         self.sessionStore = sessionStore
         let center = NotificationCenter.default
         for name in [AVCaptureDevice.wasConnectedNotification, AVCaptureDevice.wasDisconnectedNotification] {
-            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                Task { @MainActor in self?.refreshCameras() }
+            notificationTokens.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
+                let disconnectedID = name == AVCaptureDevice.wasDisconnectedNotification
+                    ? (note.object as? AVCaptureDevice)?.uniqueID : nil
+                Task { @MainActor in
+                    guard let self else { return }
+                    if disconnectedID == self.selectedCameraID {
+                        self.disconnectSelectedCamera()
+                    }
+                    self.refreshCameras()
+                }
             })
         }
+        captureEngine.onCameraActivity = { [weak self] in self?.reapplyAfterCameraActivity() }
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceTokens.append(workspace.addObserver(forName: NSWorkspace.willSleepNotification,
+                                                      object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.isSleeping = true
+                self?.activityApplyWork?.cancel()
+                self?.stopManualFocusWatchdog()
+            }
+        })
+        workspaceTokens.append(workspace.addObserver(forName: NSWorkspace.didWakeNotification,
+                                                      object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                self.isSleeping = false
+                self.refreshCameras()
+                self.reapplyAfterCameraActivity()
+                if let controller = self.uvcController { self.startManualFocusWatchdog(for: controller) }
+            }
+        })
     }
 
     deinit {
         focusWatchdogTimer?.cancel()
         for token in notificationTokens { NotificationCenter.default.removeObserver(token) }
+        for token in workspaceTokens { NSWorkspace.shared.notificationCenter.removeObserver(token) }
     }
 
     public func start() {
+        guard !hasStarted else { return }
+        hasStarted = true
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
             refreshCameras()
@@ -94,27 +138,55 @@ public final class AppModel: ObservableObject {
     }
 
     public func refreshCameras() {
-        let devices = CameraCaptureEngine.availableDevices()
+        let devices = CameraCaptureEngine.availableDevices().filter(\.isConnected)
+        let previousChoice = cameras.first { $0.id == selectedCameraID }
         devicesByID = Dictionary(uniqueKeysWithValues: devices.map { ($0.uniqueID, $0) })
         cameras = devices.map {
             CameraChoice(id: $0.uniqueID, name: $0.localizedName, isExternal: $0.deviceType == .external)
         }
         if !selectedCameraID.isEmpty, devicesByID[selectedCameraID] == nil {
-            stopManualFocusWatchdog()
-            uvcController = nil
+            // Keep the user's selected webcam when it briefly disconnects. Do not silently
+            // open an iPhone or another camera during a USB reset.
+            cameras.append(CameraChoice(id: selectedCameraID,
+                                        name: previousChoice?.name ?? "Selected camera (disconnected)",
+                                        isExternal: true))
+            disconnectSelectedCamera()
+            return
         }
-        if selectedCameraID.isEmpty || devicesByID[selectedCameraID] == nil {
+        if selectedCameraID.isEmpty {
             if let rememberedID = sessionStore.selectedCameraID, devicesByID[rememberedID] != nil {
                 selectedCameraID = rememberedID
             } else {
                 selectedCameraID = cameras.first?.id ?? ""
             }
         }
-        if !selectedCameraID.isEmpty { selectCamera(id: selectedCameraID) }
+        if CameraSelectionPolicy.needsConnection(selectedID: selectedCameraID,
+                                                  connectedIDs: devices.map(\.uniqueID),
+                                                  activeID: activeDeviceID) {
+            selectCamera(id: selectedCameraID)
+        }
+    }
+
+    private func disconnectSelectedCamera() {
+        stopManualFocusWatchdog()
+        activityApplyWork?.cancel()
+        colorApplyWork?.cancel()
+        focusApplyWork?.cancel()
+        connectionGeneration += 1
+        connectingHardware = false
+        activeDeviceID = nil
+        uvcController = nil
+        capabilities = CameraCapabilities()
+        controlStatus = .previewOnly("The selected camera is disconnected.")
+        captureEngine.select(device: nil)
     }
 
     public func selectCamera(id: String) {
         guard let device = devicesByID[id] else { return }
+        guard activeDeviceID != id else { return }
+        activeDeviceID = id
+        connectionGeneration += 1
+        let generation = connectionGeneration
         selectedCameraID = id
         sessionStore.rememberSelectedCamera(id: id)
         capabilities = CameraCapabilities()
@@ -122,6 +194,7 @@ public final class AppModel: ObservableObject {
         uvcController = nil
         colorApplyWork?.cancel()
         focusApplyWork?.cancel()
+        activityApplyWork?.cancel()
         stopManualFocusWatchdog()
 
         isRestoringProfile = true
@@ -136,32 +209,20 @@ public final class AppModel: ObservableObject {
         }
         isRestoringProfile = false
 
-        let expectedID = id
-        captureEngine.start(device: device) { [weak self] captureResult in
-            Task { @MainActor in
-                guard let self, self.selectedCameraID == expectedID else { return }
-                switch captureResult {
-                case .success:
-                    self.connectController(to: device, expectedID: expectedID)
-                case .failure(let error):
-                    self.controlStatus = .previewOnly(error.localizedDescription)
-                    self.message = error.localizedDescription
-                }
-            }
-        }
+        captureEngine.select(device: device)
+        connectController(to: device, expectedID: id, generation: generation)
     }
 
-    /// Opens the UVC control channel only after AVFoundation has started streaming. Some cameras
-    /// reset their lens controls as the stream comes online and would otherwise discard launch writes.
-    private func connectController(to device: AVCaptureDevice, expectedID: String) {
+    /// Hardware controls do not need an open preview stream. Stream starts (including those in
+    /// another app) separately reassert the current look after camera firmware has settled.
+    private func connectController(to device: AVCaptureDevice, expectedID: String, generation: Int, attempt: Int = 0) {
+        connectingHardware = true
         hardwareQueue.async { [weak self] in
-            let result = Result {
-                let controller = try UVCController(device: device)
-                try controller.resetColorToDefaults()
-                return controller
-            }
+            let result = Result { try UVCController(device: device) }
             Task { @MainActor in
-                guard let self, self.selectedCameraID == expectedID else { return }
+                guard let self, self.selectedCameraID == expectedID,
+                      self.connectionGeneration == generation else { return }
+                self.connectingHardware = false
                 switch result {
                 case .success(let controller):
                     self.uvcController = controller
@@ -184,6 +245,17 @@ public final class AppModel: ObservableObject {
                     }
                 case .failure(let error):
                     self.controlStatus = .previewOnly(error.localizedDescription)
+                    self.logger.error("Opening camera controls: \(error.localizedDescription, privacy: .public)")
+                    if let error = error as? UVCCameraError, case .notUSBVideoClass = error { return }
+                    if attempt < 3 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + pow(2, Double(attempt))) { [weak self] in
+                            guard let self, !self.isSleeping, self.uvcController == nil,
+                                  !self.connectingHardware, self.connectionGeneration == generation,
+                                  device.isConnected else { return }
+                            self.connectController(to: device, expectedID: expectedID,
+                                                   generation: generation, attempt: attempt + 1)
+                        }
+                    }
                 }
             }
         }
@@ -243,6 +315,7 @@ public final class AppModel: ObservableObject {
 
     public func resetCamera() {
         stopManualFocusWatchdog()
+        activityApplyWork?.cancel()
         guard let controller = uvcController else {
             message = "This camera does not expose compatible UVC hardware controls."
             return
@@ -270,6 +343,7 @@ public final class AppModel: ObservableObject {
     public func load(_ profile: StudioProfile) {
         colorApplyWork?.cancel()
         focusApplyWork?.cancel()
+        activityApplyWork?.cancel()
         stopManualFocusWatchdog()
         pendingProfile = profile
         isRestoringProfile = true
@@ -331,6 +405,44 @@ public final class AppModel: ObservableObject {
         sessionStore.save(color: colorSettings, hardware: hardwareSettings, for: selectedCameraID)
     }
 
+    private func reapplyAfterCameraActivity() {
+        activityApplyWork?.cancel()
+        guard !isSleeping else { return }
+        guard let controller = uvcController else {
+            if !connectingHardware, activeDeviceID == selectedCameraID,
+               let device = devicesByID[selectedCameraID], device.isConnected,
+               device.modelID.hasPrefix("UVC Camera") {
+                connectController(to: device, expectedID: selectedCameraID, generation: connectionGeneration)
+            }
+            return
+        }
+        let color = colorSettings
+        let hardware = hardwareSettings
+        let box = DispatchWorkBox()
+        let work = DispatchWorkItem { [weak self] in
+            guard box.value?.isCancelled == false else { return }
+            do {
+                // Do not reset the color baseline or briefly enable autofocus during a handoff.
+                try controller.applyHardwareLook(color)
+                if hardware.autoFocus {
+                    if controller.capabilities.autoFocus { try controller.setAutoFocus(true) }
+                } else {
+                    try controller.reassertManualFocus(normalizedFocus: hardware.focus)
+                }
+                if hardware.precisionAntiFlicker {
+                    try controller.applyPrecisionAntiFlicker(frequency: hardware.flickerFrequency)
+                } else if controller.capabilities.powerLineFrequency {
+                    try controller.setPowerLineMode(hardware.powerLineMode)
+                }
+            } catch {
+                self?.logger.error("Reapplying camera settings: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+        box.value = work
+        activityApplyWork = work
+        hardwareQueue.asyncAfter(deadline: .now() + 0.8, execute: work)
+    }
+
     private func performHardwareAction(success: String? = nil,
                                        _ action: @escaping (UVCController) throws -> Void) {
         guard let controller = uvcController else {
@@ -354,19 +466,27 @@ public final class AppModel: ObservableObject {
         stopManualFocusWatchdog()
         guard uvcController === controller,
               capabilities.focus != nil,
+              !isSleeping,
               !hardwareSettings.autoFocus else { return }
 
         let focus = hardwareSettings.focus
+        var consecutiveErrors = 0
         let timer = DispatchSource.makeTimerSource(queue: hardwareQueue)
         timer.schedule(deadline: .now() + .milliseconds(750),
                         repeating: .milliseconds(750),
                         leeway: .milliseconds(120))
-        timer.setEventHandler { [controller] in
+        timer.setEventHandler { [weak self, controller] in
             do {
                 try controller.maintainManualFocus(normalizedFocus: focus)
+                consecutiveErrors = 0
             } catch {
-                // A transient USB error should not interrupt the live preview. The next tick
-                // retries, while explicit user actions still surface their own errors in the UI.
+                consecutiveErrors += 1
+                if consecutiveErrors == 1 {
+                    self?.logger.error("Focus check failed: \(error.localizedDescription, privacy: .public)")
+                }
+                if consecutiveErrors == 3 || consecutiveErrors.isMultiple(of: 40) {
+                    Task { @MainActor [weak self] in self?.reconnectHardware(afterFailureOf: controller) }
+                }
             }
         }
         focusWatchdogTimer = timer
@@ -377,5 +497,18 @@ public final class AppModel: ObservableObject {
         focusWatchdogTimer?.setEventHandler {}
         focusWatchdogTimer?.cancel()
         focusWatchdogTimer = nil
+    }
+
+    private func reconnectHardware(afterFailureOf controller: UVCController) {
+        guard !isSleeping, uvcController === controller,
+              ProcessInfo.processInfo.systemUptime >= hardwareReconnectNotBefore,
+              let device = devicesByID[selectedCameraID], device.isConnected else { return }
+        hardwareReconnectNotBefore = ProcessInfo.processInfo.systemUptime + 30
+        stopManualFocusWatchdog()
+        activityApplyWork?.cancel()
+        pendingProfile = StudioProfile(name: "Current settings", color: colorSettings, hardware: hardwareSettings)
+        uvcController = nil
+        connectionGeneration += 1
+        connectController(to: device, expectedID: selectedCameraID, generation: connectionGeneration)
     }
 }

@@ -154,11 +154,10 @@ public final class UVCController: @unchecked Sendable {
     public func maintainManualFocus(normalizedFocus: Double) throws {
         guard let range = capabilities.focus else { return }
         let target = range.rawValue(for: normalizedFocus)
-        let autofocusEnabled = capabilities.autoFocus
-            ? (try? read(.getCurrent, from: .autoFocus)).map { $0 != 0 } ?? true
-            : false
-        let focusDrifted = (try? read(.getCurrent, from: .focus))
-            .map { abs($0 - target) > max(1, range.step) } ?? true
+        // An unavailable control is not evidence of focus drift. Propagate the read error so
+        // handoffs/sleep cannot turn a failed check into more USB writes against a resetting device.
+        let autofocusEnabled = capabilities.autoFocus ? try read(.getCurrent, from: .autoFocus) != 0 : false
+        let focusDrifted = abs(try read(.getCurrent, from: .focus) - target) > max(1, range.step)
 
         if autofocusEnabled || focusDrifted {
             try reassertManualFocus(normalizedFocus: normalizedFocus)
