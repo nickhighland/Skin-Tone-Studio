@@ -2,6 +2,7 @@ import Foundation
 import SkinToneCore
 import AVFoundation
 import Combine
+import AppKit
 
 private var failures: [String] = []
 
@@ -155,5 +156,59 @@ if CommandLine.arguments.contains("--hardware") {
     if !failures.isEmpty {
         for failure in failures { fputs("FAIL: \(failure)\n", stderr) }
         exit(1)
+    }
+}
+
+// Opt-in integration check. It captures no photos, stores no frames, and never writes UVC
+// settings. A packaged/signed check executable is needed if Terminal lacks camera permission.
+if CommandLine.arguments.contains("--preview-lifecycle") {
+    MainActor.assumeIsolated {
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+        let arguments = CommandLine.arguments
+        let requestedID = arguments.firstIndex(of: "--camera-id").flatMap {
+            $0 + 1 < arguments.count ? arguments[$0 + 1] : nil
+        }
+        let cameras = CameraCaptureEngine.availableDevices()
+        guard let camera = requestedID.flatMap({ id in cameras.first { $0.uniqueID == id } })
+                ?? (requestedID == nil ? cameras.first : nil) else {
+            fputs("FAIL: Requested preview camera is unavailable.\n", stderr)
+            exit(1)
+        }
+        guard !camera.isSuspended else {
+            fputs("Preview check skipped: this camera is suspended (for example, the MacBook lid is closed).\n", stderr)
+            exit(2)
+        }
+        let engine = CameraCaptureEngine()
+        var phase = 0
+        let subscription = engine.$state.sink { state in
+            print("Preview check: \(state.title)")
+            if state == .running, phase == 0 {
+                phase = 1
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { engine.setPreviewVisible(false) }
+            } else if state == .paused, phase == 1 {
+                phase = 2
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { engine.setPreviewVisible(true) }
+            } else if state == .running, phase == 2 {
+                phase = 3
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1) { engine.retry() }
+            } else if state == .running, phase == 3 {
+                phase = 4
+                DispatchQueue.main.async { engine.select(device: nil) }
+            } else if state == .idle, phase == 4 {
+                print("Live preview start, release, resume, retry, and teardown passed.")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+            } else if state == .inUseByAnotherApp {
+                fputs("Preview check skipped: another app is using this camera.\n", stderr)
+                exit(2)
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+            fputs("FAIL: Live preview lifecycle timed out.\n", stderr)
+            exit(1)
+        }
+        engine.select(device: camera)
+        engine.setPreviewVisible(true)
+        withExtendedLifetime((engine, subscription)) { app.run() }
     }
 }

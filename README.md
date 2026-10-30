@@ -51,6 +51,13 @@ Run the capture lifecycle regression tests (no webcam required):
 swift test
 ```
 
+With camera permission, an opt-in live preview check exercises start, hide/release, resume,
+retry, and teardown without changing camera controls or saving frames:
+
+```sh
+swift run SkinToneChecks --preview-lifecycle
+```
+
 With a USB webcam attached, report its UVC capabilities without changing them:
 
 ```sh

@@ -244,6 +244,7 @@ private final class CameraCaptureWorker {
     private var sessionTokens: [NSObjectProtocol] = []
     private var timer: DispatchSourceTimer?
     private var lastOtherAppUse = false
+    private var sessionStartedAt = 0.0
 
     private lazy var lifecycle = CaptureLifecycle(
         start: { [weak self] id in try self?.startSession(deviceID: id) },
@@ -289,10 +290,12 @@ private final class CameraCaptureWorker {
                         self.pollOtherAppUse()
                     }
                 }
-                formatObservation = device.observe(\.activeFormat, options: [.new]) { [weak self] _, _ in
+                formatObservation = device.observe(\.activeFormat, options: [.old, .new]) { [weak self] _, change in
+                    guard let old = change.oldValue, let new = change.newValue, old !== new else { return }
                     self?.queue.async { [weak self] in
                         guard let self, self.selectionGeneration == generation,
-                              self.lifecycle.state == .running else { return }
+                              self.lifecycle.state == .running,
+                              ProcessInfo.processInfo.systemUptime - self.sessionStartedAt > 2 else { return }
                         self.lifecycle.failed("Camera format changed while previewing.")
                         self.pollOtherAppUse()
                     }
@@ -400,6 +403,7 @@ private final class CameraCaptureWorker {
             })
         }
         newSession.startRunning()
+        sessionStartedAt = ProcessInfo.processInfo.systemUptime
         guard newSession.isRunning else {
             stopSession()
             throw NSError(domain: "SkinToneStudio.Camera", code: 3,
