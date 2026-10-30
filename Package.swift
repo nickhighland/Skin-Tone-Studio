@@ -21,6 +21,7 @@ let package = Package(
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("AppKit"),
                 .linkedFramework("CoreImage"),
+                .linkedFramework("CoreMediaIO"),
                 .linkedFramework("IOKit"),
                 .linkedFramework("ServiceManagement")
             ]
@@ -31,6 +32,10 @@ let package = Package(
         ),
         .executableTarget(
             name: "SkinToneChecks",
+            dependencies: ["SkinToneCore"]
+        ),
+        .testTarget(
+            name: "SkinToneCoreTests",
             dependencies: ["SkinToneCore"]
         )
     ],

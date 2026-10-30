@@ -18,6 +18,8 @@ Not every webcam sees every complexion accurately. Skin Tone Studio is an uplift
 - Applies white balance, hue, saturation, brightness, and contrast directly to camera hardware as sliders move.
 - Saves named profiles containing color, focus, and anti-flicker settings.
 - Stays available in the macOS menu bar when its window is minimized or closed.
+- Releases preview capture when hidden or when another app uses the webcam, so browsers can hand off the camera.
+- Automatically reconnects the preview after lost frames, camera errors, sleep, or a USB reconnect.
 - Checks GitHub Releases once per day and installs signed updates only after user approval.
 - Restores the webcam's UVC factory defaults with Camera Reset.
 
@@ -41,6 +43,19 @@ Run the lightweight checks (no full Xcode test runtime required):
 
 ```sh
 swift run SkinToneChecks
+```
+
+Run the capture lifecycle regression tests (no webcam required):
+
+```sh
+swift test
+```
+
+With camera permission, an opt-in live preview check exercises start, hide/release, resume,
+retry, and teardown without changing camera controls or saving frames:
+
+```sh
+swift run SkinToneChecks --preview-lifecycle
 ```
 
 With a USB webcam attached, report its UVC capabilities without changing them:
@@ -67,6 +82,8 @@ NOTARY_PROFILE=SkinToneStudio ./scripts/build-app.sh
 ## Important behavior
 
 Hardware UVC changes are made continuously and remain active when Zoom, Teams, FaceTime, or another app opens the physical webcam. There is no separate preview look and no Apply or Send step.
+
+The preview pauses while the window is hidden or another app uses the selected camera. Hardware color and focus controls remain available without holding a video stream open. When the camera becomes free, the preview resumes after a short handoff delay. Interrupted or stalled previews reconnect automatically, with a visible status and a Retry Preview button during recovery. Connecting an unrelated webcam or Continuity Camera does not restart the selected camera.
 
 Built-in Mac cameras, Continuity Camera, and some vendor-specific cameras may not expose UVC controls. The UI explains when direct hardware control is unavailable.
 

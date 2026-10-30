@@ -118,11 +118,13 @@ public struct ContentView: View {
                         "No Camera Found", systemImage: "video.slash",
                         description: Text("Connect a camera, then reopen the camera menu.")
                     ).foregroundStyle(.white)
+                } else {
+                    PreviewStateOverlay(engine: model.captureEngine)
                 }
 
                 VStack {
                     HStack {
-                        Label("Live camera output", systemImage: "bolt.fill")
+                        PreviewStateBadge(engine: model.captureEngine)
                             .font(.caption.weight(.semibold))
                             .padding(.horizontal, 10).padding(.vertical, 7)
                             .background(.ultraThinMaterial, in: Capsule())
@@ -186,6 +188,54 @@ public struct ContentView: View {
         }
         .frame(width: 380)
         .background(.ultraThinMaterial)
+    }
+}
+
+private struct PreviewStateBadge: View {
+    @ObservedObject var engine: CameraCaptureEngine
+
+    var body: some View {
+        Label(engine.state.title, systemImage: engine.state == .running ? "bolt.fill" : "video.slash")
+    }
+}
+
+private struct PreviewStateOverlay: View {
+    @ObservedObject var engine: CameraCaptureEngine
+
+    var body: some View {
+        if engine.state != .running {
+            VStack(spacing: 12) {
+                if engine.state == .starting || engine.state == .recovering {
+                    ProgressView().controlSize(.large)
+                } else {
+                    Image(systemName: "video.slash").font(.system(size: 34))
+                }
+                Text(engine.state.title).font(.title3.weight(.semibold))
+                Text(detail).font(.callout).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).frame(maxWidth: 340)
+                if engine.state == .recovering {
+                    Button("Retry Preview") { engine.retry() }.buttonStyle(.bordered)
+                }
+            }
+            .padding(28).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+        }
+    }
+
+    private var detail: String {
+        switch engine.state {
+        case .inUseByAnotherApp:
+            "Color and focus controls are still live. The preview returns when the other app releases the camera."
+        case .recovering:
+            "The camera stopped sending video. Skin Tone Studio is reconnecting automatically."
+        case .starting:
+            "Waiting for video from your webcam."
+        case .idle:
+            "Reconnect your selected webcam or choose another camera above."
+        case .paused:
+            "The preview pauses while the window is hidden. Your camera settings stay active."
+        case .running:
+            ""
+        }
     }
 }
 

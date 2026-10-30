@@ -1,0 +1,19 @@
+name: Camera and Settings Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test capture handoff and recovery
+        run: swift test
+      - name: Check settings and profiles
+        run: swift run SkinToneChecks
